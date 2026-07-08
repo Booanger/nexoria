@@ -17,6 +17,7 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@supabase/supabase-js": "^2.110.1",
     "discord.js": "^14.15.3",
     "dotenv": "^16.4.5"
   }

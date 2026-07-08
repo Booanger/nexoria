@@ -1,92 +1,138 @@
-import fs from 'fs';
-import path from 'path';
+import { createClient } from '@supabase/supabase-js';
+import { config } from './config.js';
 
-const DB_FILE = path.join(process.cwd(), 'database.json');
-
-class EventStore {
+class SupabaseEventStore {
   constructor() {
-    this.events = new Map();
-    this.load();
-  }
-
-  /**
-   * Loads events from the database file and automatically prunes events older than 24 hours.
-   */
-  load() {
-    try {
-      if (fs.existsSync(DB_FILE)) {
-        const raw = fs.readFileSync(DB_FILE, 'utf8');
-        const data = JSON.parse(raw);
-        
-        const now = Date.now();
-        const retentionPeriod = 48 * 60 * 60 * 1000; // 48 Hours
-        let pruned = false;
-
-        for (const [key, value] of Object.entries(data)) {
-          // Keep if within retention period or if it doesn't have a timestamp (legacy format compatibility)
-          if (!value.createdAt || (now - value.createdAt) < retentionPeriod) {
-            this.events.set(key, value);
-          } else {
-            pruned = true;
-            console.log(`[EventStore] Pruned abandoned/old event: "${value.title}" (${key})`);
-          }
-        }
-
-        if (pruned) {
-          this.save();
-        }
-      }
-    } catch (error) {
-      console.error('[EventStore] Database loading failed:', error);
+    this.supabase = null;
+    if (config.supabaseUrl && config.supabaseKey) {
+      this.supabase = createClient(config.supabaseUrl, config.supabaseKey);
+      console.log('[EventStore] Supabase client initialized.');
+      this.pruneOldEvents();
+    } else {
+      console.warn('[EventStore] Supabase credentials missing. Database operations will be disabled.');
     }
   }
 
   /**
-   * Saves current state to the database file.
+   * Deletes events older than 48 hours from the database.
    */
-  save() {
+  async pruneOldEvents() {
+    if (!this.supabase) return;
     try {
-      const obj = {};
-      for (const [key, value] of this.events.entries()) {
-        obj[key] = value;
+      const fortyEightHoursAgo = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+      const { error } = await this.supabase
+        .from('events')
+        .delete()
+        .lt('created_at', fortyEightHoursAgo);
+
+      if (error) {
+        console.error('[EventStore] Failed to prune old events:', error.message);
+      } else {
+        console.log('[EventStore] Pruned events older than 48 hours from Supabase.');
       }
-      fs.writeFileSync(DB_FILE, JSON.stringify(obj, null, 2), 'utf8');
     } catch (error) {
-      console.error('[EventStore] Database saving failed:', error);
+      console.error('[EventStore] Pruning error:', error);
     }
   }
 
   /**
-   * Gets an event by its Discord message/event ID.
+   * Retrieves an event by message ID.
    * @param {string} eventId 
-   * @returns {object|null}
+   * @returns {Promise<object|null>}
    */
-  getEvent(eventId) {
-    return this.events.get(eventId) || null;
+  async getEvent(eventId) {
+    if (!this.supabase) return null;
+    try {
+      const { data, error } = await this.supabase
+        .from('events')
+        .select('data')
+        .eq('id', eventId)
+        .single();
+
+      if (error) {
+        if (error.code !== 'PGRST116') { // PGRST116 means no rows found (expected for new events before save)
+          console.error('[EventStore] Error fetching event:', error.message);
+        }
+        return null;
+      }
+      return data ? data.data : null;
+    } catch (error) {
+      console.error('[EventStore] Error in getEvent:', error);
+      return null;
+    }
   }
 
   /**
-   * Saves or updates an event.
+   * Saves or updates an event in Supabase.
    * @param {string} eventId 
    * @param {object} eventData 
    */
-  saveEvent(eventId, eventData) {
-    this.events.set(eventId, eventData);
-    this.save();
+  async saveEvent(eventId, eventData) {
+    if (!this.supabase) return;
+    try {
+      const { error } = await this.supabase
+        .from('events')
+        .upsert({
+          id: eventId,
+          data: eventData,
+          created_at: eventData.createdAt ? new Date(eventData.createdAt).toISOString() : new Date().toISOString()
+        });
+
+      if (error) {
+        console.error('[EventStore] Error saving event:', error.message);
+      }
+    } catch (error) {
+      console.error('[EventStore] Error in saveEvent:', error);
+    }
   }
 
   /**
-   * Deletes an event.
+   * Deletes an event by message ID.
    * @param {string} eventId 
-   * @returns {boolean}
+   * @returns {Promise<boolean>}
    */
-  deleteEvent(eventId) {
-    const deleted = this.events.delete(eventId);
-    if (deleted) {
-      this.save();
+  async deleteEvent(eventId) {
+    if (!this.supabase) return false;
+    try {
+      const { error } = await this.supabase
+        .from('events')
+        .delete()
+        .eq('id', eventId);
+
+      if (error) {
+        console.error('[EventStore] Error deleting event:', error.message);
+        return false;
+      }
+      return true;
+    } catch (error) {
+      console.error('[EventStore] Error in deleteEvent:', error);
+      return false;
     }
-    return deleted;
+  }
+
+  /**
+   * Retrieves all active events created by a specific user.
+   * @param {string} leaderId 
+   * @returns {Promise<Array<object>>}
+   */
+  async getEventsByLeader(leaderId) {
+    if (!this.supabase) return [];
+    try {
+      const { data, error } = await this.supabase
+        .from('events')
+        .select('data')
+        .eq('data->>leaderId', leaderId);
+
+      if (error) {
+        console.error('[EventStore] Error fetching events by leader:', error.message);
+        return [];
+      }
+      return data ? data.map(item => item.data) : [];
+    } catch (error) {
+      console.error('[EventStore] Error in getEventsByLeader:', error);
+      return [];
+    }
   }
 }
 
-export const eventStore = new EventStore();
+export const eventStore = new SupabaseEventStore();

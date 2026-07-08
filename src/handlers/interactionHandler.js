@@ -63,10 +63,9 @@ async function handleEventCreateModal(interaction) {
     return interaction.editReply({ content: '❌ Error: No valid roles or slots could be parsed. Please check your template.' });
   }
 
-  // Get active events by this user
-  const activeEventsOfUser = Array.from(eventStore.events.values())
-    .filter(e => e.leaderId === interaction.user.id)
-    .sort((a, b) => a.createdAt - b.createdAt); // Sorted oldest first
+  // Get active events by this user from Supabase
+  const activeEventsOfUser = await eventStore.getEventsByLeader(interaction.user.id);
+  activeEventsOfUser.sort((a, b) => a.createdAt - b.createdAt); // Sorted oldest first
 
   let autoClosedNotice = '';
 
@@ -74,7 +73,7 @@ async function handleEventCreateModal(interaction) {
     const oldestEvent = activeEventsOfUser[0];
     
     // 1. Delete from database
-    eventStore.deleteEvent(oldestEvent.id);
+    await eventStore.deleteEvent(oldestEvent.id);
 
     // 2. Try to close it visually on Discord
     try {
@@ -109,24 +108,23 @@ async function handleEventCreateModal(interaction) {
     createdAt: Date.now() // Autosweep timestamp (48h retention)
   };
 
-  // 1. Send @everyone ping immediately before posting the embed
-  try {
-    const channel = await interaction.client.channels.fetch(event.channelId);
-    await channel.send({ content: '@everyone' });
-  } catch (error) {
-    console.warn('[Notification] Failed to send @everyone ping:', error.message);
+  // Embed creation
+  const embed = buildEventEmbed(event);
+  
+  // Format response content to include @everyone ping above the embed
+  let responseContent = '@everyone';
+  if (autoClosedNotice) {
+    responseContent = `@everyone\n${autoClosedNotice}`;
   }
 
-  // 2. Post the event embed right after
-  const embed = buildEventEmbed(event);
   const replyMessage = await interaction.editReply({
-    content: autoClosedNotice || null,
+    content: responseContent,
     embeds: [embed],
     fetchReply: true
   });
 
   event.id = replyMessage.id;
-  eventStore.saveEvent(event.id, event);
+  await eventStore.saveEvent(event.id, event);
 
   const components = buildEventComponents(event);
   await interaction.editReply({
@@ -139,7 +137,7 @@ async function handleEventCreateModal(interaction) {
  */
 async function handleRoleSelect(interaction) {
   const eventId = interaction.customId.split(':')[1];
-  const event = eventStore.getEvent(eventId);
+  const event = await eventStore.getEvent(eventId);
 
   if (!event) {
     return interaction.reply({ content: '❌ Error: This event could not be found in the database.', flags: MessageFlags.Ephemeral });
@@ -176,7 +174,7 @@ async function handleRoleSelect(interaction) {
   selectedSlot.userId = userId;
   selectedSlot.username = username;
 
-  eventStore.saveEvent(eventId, event);
+  await eventStore.saveEvent(eventId, event);
 
   const embed = buildEventEmbed(event);
   const components = buildEventComponents(event);
@@ -192,7 +190,7 @@ async function handleRoleSelect(interaction) {
  */
 async function handleLeaveButton(interaction) {
   const eventId = interaction.customId.split(':')[1];
-  const event = eventStore.getEvent(eventId);
+  const event = await eventStore.getEvent(eventId);
 
   if (!event) {
     return interaction.reply({ content: '❌ Error: This event could not be found.', flags: MessageFlags.Ephemeral });
@@ -214,7 +212,7 @@ async function handleLeaveButton(interaction) {
     return interaction.reply({ content: '⚠️ You are not registered for this event.', flags: MessageFlags.Ephemeral });
   }
 
-  eventStore.saveEvent(eventId, event);
+  await eventStore.saveEvent(eventId, event);
 
   const embed = buildEventEmbed(event);
   const components = buildEventComponents(event);
@@ -230,7 +228,7 @@ async function handleLeaveButton(interaction) {
  */
 async function handleSettingsButton(interaction) {
   const eventId = interaction.customId.split(':')[1];
-  const event = eventStore.getEvent(eventId);
+  const event = await eventStore.getEvent(eventId);
 
   if (!event) {
     return interaction.reply({ content: '❌ Error: This event could not be found.', flags: MessageFlags.Ephemeral });
@@ -272,7 +270,7 @@ async function handleSettingsButton(interaction) {
  */
 async function handleControlEditEvent(interaction) {
   const eventId = interaction.customId.split(':')[1];
-  const event = eventStore.getEvent(eventId);
+  const event = await eventStore.getEvent(eventId);
 
   if (!event) {
     return interaction.reply({ content: '❌ Event not found.', flags: MessageFlags.Ephemeral });
@@ -322,7 +320,7 @@ async function handleControlEditEvent(interaction) {
  */
 async function handleEditModalSubmit(interaction) {
   const eventId = interaction.customId.split(':')[1];
-  const event = eventStore.getEvent(eventId);
+  const event = await eventStore.getEvent(eventId);
 
   if (!event) {
     return interaction.reply({ content: '❌ Event not found.', flags: MessageFlags.Ephemeral });
@@ -357,7 +355,7 @@ async function handleEditModalSubmit(interaction) {
   event.description = description;
   event.slots = newSlots;
 
-  eventStore.saveEvent(eventId, event);
+  await eventStore.saveEvent(eventId, event);
 
   const channel = await interaction.client.channels.fetch(event.channelId);
   const message = await channel.messages.fetch(eventId);
@@ -378,13 +376,13 @@ async function handleEditModalSubmit(interaction) {
  */
 async function handleControlClose(interaction) {
   const eventId = interaction.customId.split(':')[1];
-  const event = eventStore.getEvent(eventId);
+  const event = await eventStore.getEvent(eventId);
 
   if (!event) {
     return interaction.reply({ content: '❌ Event already closed or not found.', flags: MessageFlags.Ephemeral });
   }
 
-  eventStore.deleteEvent(eventId);
+  await eventStore.deleteEvent(eventId);
 
   const channel = await interaction.client.channels.fetch(event.channelId);
   const message = await channel.messages.fetch(eventId);
@@ -395,6 +393,7 @@ async function handleControlClose(interaction) {
     .setDescription(`⚙️ **This event has ended.**\n\n*Description: ${event.description || 'None'}*`);
 
   await message.edit({
+    content: null, // Remove @everyone ping from content when ended
     embeds: [embed],
     components: []
   });
@@ -411,7 +410,7 @@ async function handleControlClose(interaction) {
  */
 async function handleControlPing(interaction) {
   const eventId = interaction.customId.split(':')[1];
-  const event = eventStore.getEvent(eventId);
+  const event = await eventStore.getEvent(eventId);
 
   if (!event) {
     return interaction.reply({ content: '❌ Event not found.', flags: MessageFlags.Ephemeral });

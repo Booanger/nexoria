@@ -3,7 +3,9 @@ dotenv.config();
 
 export const config = {
   token: process.env.DISCORD_TOKEN,
-  clientId: process.env.CLIENT_ID
+  clientId: process.env.CLIENT_ID,
+  supabaseUrl: process.env.SUPABASE_URL,
+  supabaseKey: process.env.SUPABASE_KEY
 };
 
 if (!config.token) {
