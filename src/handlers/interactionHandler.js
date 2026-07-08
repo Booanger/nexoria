@@ -70,7 +70,7 @@ async function handleEventCreateModal(interaction) {
 
   let autoClosedNotice = '';
 
-  if (activeEventsOfUser.length >= 3) {
+  if (activeEventsOfUser.length >= 5) {
     const oldestEvent = activeEventsOfUser[0];
     
     // 1. Delete from database
@@ -106,7 +106,7 @@ async function handleEventCreateModal(interaction) {
     slots,
     guildId: interaction.guildId,
     channelId: interaction.channelId,
-    createdAt: Date.now() // Autosweep timestamp (48h retention)
+    createdAt: Date.now() // Autosweep timestamp (72h retention)
   };
 
   const channel = await interaction.client.channels.fetch(event.channelId);

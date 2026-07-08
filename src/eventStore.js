@@ -14,21 +14,21 @@ class SupabaseEventStore {
   }
 
   /**
-   * Deletes events older than 48 hours from the database.
+   * Deletes events older than 72 hours from the database.
    */
   async pruneOldEvents() {
     if (!this.supabase) return;
     try {
-      const fortyEightHoursAgo = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+      const seventyTwoHoursAgo = new Date(Date.now() - 72 * 60 * 60 * 1000).toISOString();
       const { error } = await this.supabase
         .from('events')
         .delete()
-        .lt('created_at', fortyEightHoursAgo);
+        .lt('created_at', seventyTwoHoursAgo);
 
       if (error) {
         console.error('[EventStore] Failed to prune old events:', error.message);
       } else {
-        console.log('[EventStore] Pruned events older than 48 hours from Supabase.');
+        console.log('[EventStore] Pruned events older than 72 hours from Supabase.');
       }
     } catch (error) {
       console.error('[EventStore] Pruning error:', error);
