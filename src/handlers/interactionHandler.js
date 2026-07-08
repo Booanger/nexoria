@@ -111,18 +111,17 @@ async function handleEventCreateModal(interaction) {
 
   const channel = await interaction.client.channels.fetch(event.channelId);
 
-  // 1. Send @everyone as a public message to trigger the notification ping
-  try {
-    await channel.send({ content: '@everyone' });
-  } catch (error) {
-    console.warn('[Notification] Failed to send @everyone ping:', error.message);
-  }
-
-  // 2. Send the actual Event Embed and components as a public message right after
+  // 1. Send the @everyone ping, Event Embed, and components united as a single public message to trigger notifications and highlight the entire box
   const embed = buildEventEmbed(event);
   const components = buildEventComponents(event);
   
+  let responseContent = '@everyone';
+  if (autoClosedNotice) {
+    responseContent = `@everyone\n${autoClosedNotice}`;
+  }
+
   const publicMessage = await channel.send({
+    content: responseContent,
     embeds: [embed],
     components: components
   });
