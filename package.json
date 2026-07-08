@@ -1,0 +1,23 @@
+{
+  "name": "nexoria-event-bot",
+  "version": "1.0.0",
+  "description": "Albion Online and MMO Event/Content Creator Bot",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node --test tests/*.test.js"
+  },
+  "keywords": [
+    "discord",
+    "bot",
+    "albion-online",
+    "mmo"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "discord.js": "^14.15.3",
+    "dotenv": "^16.4.5"
+  }
+}
