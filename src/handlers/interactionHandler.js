@@ -123,6 +123,16 @@ async function handleEventCreateModal(interaction) {
   await interaction.editReply({
     components: components
   });
+
+  // Notify everyone in the channel about the new content
+  try {
+    const channel = await interaction.client.channels.fetch(event.channelId);
+    await channel.send({
+      content: `📢 @everyone New content **${event.title.toUpperCase()}** has been scheduled by <@${event.leaderId}>!`
+    });
+  } catch (error) {
+    console.warn('[Notification] Failed to send @everyone announcement:', error.message);
+  }
 }
 
 /**
