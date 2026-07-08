@@ -109,6 +109,15 @@ async function handleEventCreateModal(interaction) {
     createdAt: Date.now() // Autosweep timestamp (48h retention)
   };
 
+  // 1. Send @everyone ping immediately before posting the embed
+  try {
+    const channel = await interaction.client.channels.fetch(event.channelId);
+    await channel.send({ content: '@everyone' });
+  } catch (error) {
+    console.warn('[Notification] Failed to send @everyone ping:', error.message);
+  }
+
+  // 2. Post the event embed right after
   const embed = buildEventEmbed(event);
   const replyMessage = await interaction.editReply({
     content: autoClosedNotice || null,
@@ -123,16 +132,6 @@ async function handleEventCreateModal(interaction) {
   await interaction.editReply({
     components: components
   });
-
-  // Notify everyone in the channel about the new content
-  try {
-    const channel = await interaction.client.channels.fetch(event.channelId);
-    await channel.send({
-      content: `📢 @everyone New content **${event.title.toUpperCase()}** has been scheduled by <@${event.leaderId}>!`
-    });
-  } catch (error) {
-    console.warn('[Notification] Failed to send @everyone announcement:', error.message);
-  }
 }
 
 /**
