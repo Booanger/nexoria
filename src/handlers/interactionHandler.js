@@ -108,17 +108,18 @@ async function handleEventCreateModal(interaction) {
     createdAt: Date.now() // Autosweep timestamp (48h retention)
   };
 
-  // Embed creation
-  const embed = buildEventEmbed(event);
-  
-  // Format response content to include @everyone ping above the embed
-  let responseContent = '@everyone';
-  if (autoClosedNotice) {
-    responseContent = `@everyone\n${autoClosedNotice}`;
+  // 1. Send @everyone as a new message to trigger the notification ping
+  try {
+    const channel = await interaction.client.channels.fetch(event.channelId);
+    await channel.send({ content: '@everyone' });
+  } catch (error) {
+    console.warn('[Notification] Failed to send @everyone ping:', error.message);
   }
 
+  // 2. Post the event embed
+  const embed = buildEventEmbed(event);
   const replyMessage = await interaction.editReply({
-    content: responseContent,
+    content: autoClosedNotice || null,
     embeds: [embed],
     fetchReply: true
   });
