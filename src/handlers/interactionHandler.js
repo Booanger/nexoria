@@ -111,9 +111,8 @@ async function handleEventCreateModal(interaction) {
 
   const channel = await interaction.client.channels.fetch(event.channelId);
 
-  // 1. Send the @everyone ping, Event Embed, and components united as a single public message to trigger notifications and highlight the entire box
+  // 1. Send the @everyone ping and Event Embed united as a single public message first (to get the message ID)
   const embed = buildEventEmbed(event);
-  const components = buildEventComponents(event);
   
   let responseContent = '@everyone';
   if (autoClosedNotice) {
@@ -122,12 +121,18 @@ async function handleEventCreateModal(interaction) {
 
   const publicMessage = await channel.send({
     content: responseContent,
-    embeds: [embed],
-    components: components
+    embeds: [embed]
   });
 
+  // 2. Set the correct ID and save to Supabase
   event.id = publicMessage.id;
   await eventStore.saveEvent(event.id, event);
+
+  // 3. Build components using the correct event.id and edit the public message to attach them
+  const components = buildEventComponents(event);
+  await publicMessage.edit({
+    components: components
+  });
 
   // 3. Confirm to the leader privately
   let confirmationText = '✅ Event successfully created!';
