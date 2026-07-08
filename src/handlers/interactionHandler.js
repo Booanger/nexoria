@@ -51,7 +51,8 @@ export async function handleInteraction(interaction) {
  * Handles modal submit when creating an event.
  */
 async function handleEventCreateModal(interaction) {
-  await interaction.deferReply();
+  // Defer ephemerally so the placeholder is private and does not mess up public message order
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
   const title = interaction.fields.getTextInputValue('modal_event_title');
   const description = interaction.fields.getTextInputValue('modal_event_desc') || '';
@@ -108,28 +109,34 @@ async function handleEventCreateModal(interaction) {
     createdAt: Date.now() // Autosweep timestamp (48h retention)
   };
 
-  // 1. Send @everyone as a new message to trigger the notification ping
+  const channel = await interaction.client.channels.fetch(event.channelId);
+
+  // 1. Send @everyone as a public message to trigger the notification ping
   try {
-    const channel = await interaction.client.channels.fetch(event.channelId);
     await channel.send({ content: '@everyone' });
   } catch (error) {
     console.warn('[Notification] Failed to send @everyone ping:', error.message);
   }
 
-  // 2. Post the event embed
+  // 2. Send the actual Event Embed and components as a public message right after
   const embed = buildEventEmbed(event);
-  const replyMessage = await interaction.editReply({
-    content: autoClosedNotice || null,
+  const components = buildEventComponents(event);
+  
+  const publicMessage = await channel.send({
     embeds: [embed],
-    fetchReply: true
+    components: components
   });
 
-  event.id = replyMessage.id;
+  event.id = publicMessage.id;
   await eventStore.saveEvent(event.id, event);
 
-  const components = buildEventComponents(event);
+  // 3. Confirm to the leader privately
+  let confirmationText = '✅ Event successfully created!';
+  if (autoClosedNotice) {
+    confirmationText += `\n${autoClosedNotice}`;
+  }
   await interaction.editReply({
-    components: components
+    content: confirmationText
   });
 }
 
