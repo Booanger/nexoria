@@ -33,7 +33,7 @@ export function buildEventEmbed(event) {
     let rolesValue = '';
     for (const slot of event.slots) {
       const userMention = slot.userId ? `<@${slot.userId}>` : '';
-      rolesValue += `**${slot.name}**: ${userMention}\n`;
+      rolesValue += `🔸 **${slot.name}**: ${userMention}\n`;
       if (slot.build) {
         rolesValue += `└ *${slot.build}*\n`;
       }
@@ -48,7 +48,7 @@ export function buildEventEmbed(event) {
       
       for (const slot of slots) {
         const userMention = slot.userId ? `<@${slot.userId}>` : '';
-        categoryValue += `**${slot.name}**: ${userMention}\n`;
+        categoryValue += `🔸 **${slot.name}**: ${userMention}\n`;
         if (slot.build) {
           categoryValue += `└ *${slot.build}*\n`;
         }
