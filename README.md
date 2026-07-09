@@ -17,9 +17,9 @@ Bu bot, Albion Online ve benzeri MMO'lar için gelişmiş bir şablon tabanlı e
    - **Rol Seç Menüsü**: Boş ve dolu rollerin tümünü listeleyen açılır menü. Bir kişi rol seçtiğinde otomatik o role atanır ve eski rolünden çıkarılır.
    - **Ayrıl Butonu**: Kullanıcının etkinlikten çıkmasını sağlar.
    - **Ayarlar Butonu (Lidere Özel)**: Ephemeral (sadece lidere görünen) yönetim menüsü açar. Buradan etkinlik başlığı/açıklaması ve rolleri tek modalda düzenlenebilir, katılımcılara toplu ping atılabilir veya etkinlik sonlandırılabilir.
-4. **Güvenlik ve Otomatik Temizleme (48 Saat Retention & Limitler)**:
-   - **Kullanıcı Başına 3 Aktif Etkinlik**: Bir kullanıcı aynı anda en fazla 3 aktif etkinlik açabilir. 4. etkinliği açmaya çalıştığında, en eski etkinliği veritabanından silinir ve Discord'da otomatik olarak sonlandırılır.
-   - **48 Saatlik Temizlik**: Kapatılması unutulan tüm etkinlikler, oluşturulduktan 48 saat sonra veritabanından otomatik olarak temizlenir.
+4. **Güvenlik ve Otomatik Temizleme (72 Saat Retention & Limitler)**:
+   - **Kullanıcı Başına 5 Aktif Etkinlik**: Bir kullanıcı aynı anda en fazla 5 aktif etkinlik açabilir. 6. etkinliği açmaya çalıştığında, en eski etkinliği veritabanından silinir ve Discord'da otomatik olarak sonlandırılır.
+   - **72 Saatlik Temizlik**: Kapatılması unutulan tüm etkinlikler, oluşturulduktan 72 saat sonra veritabanından otomatik olarak temizlenir.
 
 ---
 
