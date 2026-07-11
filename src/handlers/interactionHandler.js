@@ -68,8 +68,6 @@ async function handleEventCreateModal(interaction) {
   const activeEventsOfUser = await eventStore.getEventsByLeader(interaction.user.id);
   activeEventsOfUser.sort((a, b) => a.createdAt - b.createdAt); // Sorted oldest first
 
-  let autoClosedNotice = '';
-
   if (activeEventsOfUser.length >= 5) {
     const oldestEvent = activeEventsOfUser[0];
     
@@ -84,13 +82,12 @@ async function handleEventCreateModal(interaction) {
       const embed = EmbedBuilder.from(message.embeds[0])
         .setTitle(`🏁 EVENT ENDED: ${oldestEvent.title.toUpperCase()}`)
         .setColor('#7F8C8D') // Neutral gray color
-        .setDescription(`⚙️ **This event has been automatically ended because a new event was created.**\n\n*Description: ${oldestEvent.description || 'None'}*`);
+        .setDescription(`⚙️ **This event has ended.**\n\n*Description: ${oldestEvent.description || 'None'}*`);
 
       await message.edit({
         embeds: [embed],
         components: []
       });
-      autoClosedNotice = `⚠️ Your oldest event **${oldestEvent.title}** has been automatically closed.`;
       console.log(`[EventStore] Auto-closed oldest event: ${oldestEvent.id}`);
     } catch (error) {
       console.warn(`[EventStore] Could not auto-close oldest event message on Discord:`, error.message);
@@ -109,7 +106,16 @@ async function handleEventCreateModal(interaction) {
     createdAt: Date.now() // Autosweep timestamp (72h retention)
   };
 
-  const channel = await interaction.client.channels.fetch(event.channelId);
+  let channel;
+  try {
+    channel = await interaction.client.channels.fetch(event.channelId);
+    if (!channel) throw new Error('Channel not found');
+  } catch (error) {
+    console.warn(`[Channel Fetch] Missing access to channel ${event.channelId}:`, error.message);
+    return interaction.editReply({
+      content: '❌ Error: The bot cannot access this channel. Please ensure the bot has the **View Channel** permission here.'
+    });
+  }
 
   // 1. Send the @everyone ping and Event Embed united as a single public message first (to get the message ID)
   const embed = buildEventEmbed(event);
@@ -119,10 +125,18 @@ async function handleEventCreateModal(interaction) {
     responseContent = `@everyone\n${autoClosedNotice}`;
   }
 
-  const publicMessage = await channel.send({
-    content: responseContent,
-    embeds: [embed]
-  });
+  let publicMessage;
+  try {
+    publicMessage = await channel.send({
+      content: responseContent,
+      embeds: [embed]
+    });
+  } catch (error) {
+    console.error(`[Channel Send] Missing permissions to send message in channel ${event.channelId}:`, error.message);
+    return interaction.editReply({
+      content: '❌ Error: The bot does not have permission to send messages or embeds in this channel. Please check the bot\'s channel permissions (View Channel, Send Messages, Embed Links).'
+    });
+  }
 
   // 2. Set the correct ID and save to Supabase
   event.id = publicMessage.id;
@@ -130,17 +144,20 @@ async function handleEventCreateModal(interaction) {
 
   // 3. Build components using the correct event.id and edit the public message to attach them
   const components = buildEventComponents(event);
-  await publicMessage.edit({
-    components: components
-  });
+  try {
+    await publicMessage.edit({
+      components: components
+    });
+  } catch (error) {
+    console.error(`[Message Edit] Failed to attach components:`, error.message);
+    return interaction.editReply({
+      content: '❌ Error: The bot could not attach interactive buttons to the event. Please ensure the bot has sufficient permissions.'
+    });
+  }
 
   // 3. Confirm to the leader privately
-  let confirmationText = '✅ Event successfully created!';
-  if (autoClosedNotice) {
-    confirmationText += `\n${autoClosedNotice}`;
-  }
   await interaction.editReply({
-    content: confirmationText
+    content: '✅ Event successfully created!'
   });
 }
 
