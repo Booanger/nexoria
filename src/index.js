@@ -46,10 +46,51 @@ async function registerCommands() {
   }
 }
 
+/**
+ * Verifies if the bot is in any unauthorized server and leaves it.
+ */
+async function checkGuildsAccess() {
+  const allowedGuilds = config.allowedGuilds || [];
+  if (allowedGuilds.length === 0) {
+    console.log('📡 Access Control: No ALLOWED_GUILDS whitelist configured. The bot will run on any server.');
+    return;
+  }
+
+  const guilds = client.guilds.cache;
+  for (const [guildId, guild] of guilds) {
+    if (!allowedGuilds.includes(guildId)) {
+      console.warn(`⚠️ Access Control: Bot is on an unauthorized server: ${guild.name} (${guildId}). Leaving...`);
+      try {
+        await guild.leave();
+        console.log(`✅ Access Control: Successfully left unauthorized server: ${guild.name}`);
+      } catch (error) {
+        console.error(`❌ Access Control: Failed to leave server ${guild.name} (${guildId}):`, error.message);
+      }
+    }
+  }
+}
+
 // Client ready event
 client.once('clientReady', async () => {
   console.log(`🤖 Bot hazır! Giriş yapan hesap: ${client.user.tag}`);
+  await checkGuildsAccess();
   await registerCommands();
+});
+
+// Check access when invited to a new server
+client.on('guildCreate', async (guild) => {
+  const allowedGuilds = config.allowedGuilds || [];
+  if (allowedGuilds.length > 0 && !allowedGuilds.includes(guild.id)) {
+    console.warn(`⚠️ Access Control: Bot was invited to an unauthorized server: ${guild.name} (${guild.id}). Leaving immediately...`);
+    try {
+      await guild.leave();
+      console.log(`✅ Access Control: Successfully left unauthorized server: ${guild.name}`);
+    } catch (error) {
+      console.error(`❌ Access Control: Failed to leave server ${guild.name} (${guild.id}):`, error.message);
+    }
+  } else {
+    console.log(`📡 Access Control: Bot joined an authorized server: ${guild.name} (${guild.id})`);
+  }
 });
 
 // Global interaction listener
