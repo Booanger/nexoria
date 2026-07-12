@@ -120,10 +120,7 @@ async function handleEventCreateModal(interaction) {
   // 1. Send the @everyone ping and Event Embed united as a single public message first (to get the message ID)
   const embed = buildEventEmbed(event);
   
-  let responseContent = '@everyone';
-  if (autoClosedNotice) {
-    responseContent = `@everyone\n${autoClosedNotice}`;
-  }
+  const responseContent = '@everyone';
 
   let publicMessage;
   try {
