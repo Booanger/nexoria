@@ -124,6 +124,19 @@ client.on('interactionCreate', async (interaction) => {
   }
 });
 
+// Discord Client Error & Reconnection Handling
+client.on('error', (error) => {
+  console.error('❌ Discord client hatası:', error);
+});
+
+client.on('shardError', (error) => {
+  console.error('❌ Discord WebSocket (shard) hatası:', error);
+});
+
+client.on('shardDisconnect', (event) => {
+  console.warn(`⚠️ Discord bağlantısı koptu (Kod: ${event?.code}). Yeniden bağlanmaya çalışılıyor...`);
+});
+
 // Global unhandled promise rejection listener
 process.on('unhandledRejection', (reason, promise) => {
   console.error('Unhandled Rejection at:', promise, 'reason:', reason);
@@ -131,7 +144,9 @@ process.on('unhandledRejection', (reason, promise) => {
 
 // Launch Bot
 if (config.token) {
-  client.login(config.token);
+  client.login(config.token).catch((err) => {
+    console.error('❌ Discord login başarısız oldu! Token veya ağ hatası:', err.message);
+  });
 } else {
   console.error('❌ DISCORD_TOKEN bulunamadığı için bot başlatılamadı!');
 }
