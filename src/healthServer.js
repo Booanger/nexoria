@@ -11,16 +11,20 @@ export function createHealthServer({ getDiscordStatus }) {
   return http.createServer((req, res) => {
     const pathname = new URL(req.url || '/', 'http://localhost').pathname;
 
-    if (pathname !== '/' && pathname !== '/health') {
+    if (pathname !== '/' && pathname !== '/health' && pathname !== '/ready') {
       res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify({ status: 'not_found' }));
       return;
     }
 
     const discord = getDiscordStatus();
-    const statusCode = discord.ready ? 200 : 503;
+    const isLivenessCheck = pathname === '/health';
+    const processCanRecover = discord.state !== 'stopping';
+    const statusCode = isLivenessCheck
+      ? (processCanRecover ? 200 : 503)
+      : (discord.ready ? 200 : 503);
     const body = {
-      status: discord.ready ? 'ok' : 'unavailable',
+      status: discord.ready ? 'ok' : (processCanRecover ? 'degraded' : 'unavailable'),
       discord: discord.state,
       uptimeSeconds: Math.floor(process.uptime())
     };

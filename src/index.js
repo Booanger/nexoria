@@ -8,6 +8,24 @@ const PORT = Number.parseInt(process.env.PORT || '3000', 10);
 const DISCORD_READY_TIMEOUT_MS = 45_000;
 const DISCORD_RECONNECT_TIMEOUT_MS = 90_000;
 const DISCORD_API_TIMEOUT_MS = 15_000;
+const DISCORD_RATE_LIMIT_BASE_DELAY_MS = 30_000;
+const DISCORD_RATE_LIMIT_MAX_DELAY_MS = 10 * 60_000;
+const DISCORD_USER_AGENT = 'DiscordBot (https://github.com/Booanger/nexoria, 1.0.0)';
+
+class DiscordApiError extends Error {
+  constructor(message, { status, code, retryAfterMs, scope } = {}) {
+    super(message);
+    this.name = 'DiscordApiError';
+    this.status = status;
+    this.code = code;
+    this.retryAfterMs = retryAfterMs;
+    this.scope = scope;
+  }
+
+  get retryable() {
+    return this.status === 429 || this.code === 40333;
+  }
+}
 
 // Initialize Discord Client with basic Guild permissions
 const client = new Client({
@@ -32,7 +50,7 @@ healthServer.on('error', (error) => {
 });
 
 healthServer.listen(PORT, () => {
-  console.log(`📡 Health server ${PORT} portunda dinleniyor (/health).`);
+  console.log(`📡 Health server ${PORT} portunda dinleniyor (Render: /health, UptimeRobot: /ready).`);
 });
 
 function clearConnectionDeadline() {
@@ -74,15 +92,43 @@ async function shutdown(exitCode, reason) {
 
 async function fetchDiscordApi(path) {
   const response = await fetch(`https://discord.com/api/v10${path}`, {
-    headers: { Authorization: `Bot ${config.token}` },
+    headers: {
+      Authorization: `Bot ${config.token}`,
+      'User-Agent': DISCORD_USER_AGENT
+    },
     signal: AbortSignal.timeout(DISCORD_API_TIMEOUT_MS)
   });
 
-  if (!response.ok) {
-    throw new Error(`Discord API ${path} isteği HTTP ${response.status} döndürdü.`);
+  const responseText = await response.text();
+  let body = null;
+  try {
+    body = responseText ? JSON.parse(responseText) : null;
+  } catch {
+    // Cloudflare may return HTML instead of Discord's normal JSON body.
   }
 
-  return response.json();
+  if (!response.ok) {
+    const retryAfterSeconds = Number.parseFloat(
+      body?.retry_after
+      ?? response.headers.get('retry-after')
+      ?? response.headers.get('x-ratelimit-reset-after')
+    );
+    const retryAfterMs = Number.isFinite(retryAfterSeconds)
+      ? Math.max(1_000, Math.ceil(retryAfterSeconds * 1_000))
+      : null;
+
+    throw new DiscordApiError(
+      `Discord API ${path} isteği HTTP ${response.status} döndürdü.`,
+      {
+        status: response.status,
+        code: body?.code,
+        retryAfterMs,
+        scope: response.headers.get('x-ratelimit-scope') || (body?.global ? 'global' : 'unknown')
+      }
+    );
+  }
+
+  return body;
 }
 
 async function verifyDiscordCredentials() {
@@ -101,6 +147,42 @@ async function verifyDiscordCredentials() {
   const remaining = gateway.session_start_limit?.remaining;
   const sessionInfo = Number.isInteger(remaining) ? `, kalan gateway oturumu: ${remaining}` : '';
   console.log(`✅ Discord tokenı doğrulandı: ${botUser.username}${sessionInfo}`);
+}
+
+function wait(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function verifyDiscordCredentialsWithRetry() {
+  let rateLimitAttempt = 0;
+
+  while (!shuttingDown) {
+    try {
+      await verifyDiscordCredentials();
+      return;
+    } catch (error) {
+      if (!(error instanceof DiscordApiError) || !error.retryable) {
+        throw error;
+      }
+
+      rateLimitAttempt += 1;
+      discordState = 'rate_limited';
+      const backoffMs = Math.min(
+        DISCORD_RATE_LIMIT_BASE_DELAY_MS * (2 ** Math.min(rateLimitAttempt - 1, 5)),
+        DISCORD_RATE_LIMIT_MAX_DELAY_MS
+      );
+      const delayMs = Math.max(error.retryAfterMs || 0, backoffMs);
+      const delaySeconds = Math.ceil(delayMs / 1_000);
+
+      console.warn(
+        `⏳ Discord rate limit/Cloudflare engeli (HTTP ${error.status}, scope: ${error.scope}). `
+        + `${delaySeconds} saniye beklenip tekrar denenecek; süreç yeniden başlatılmayacak.`
+      );
+      await wait(delayMs);
+    }
+  }
+
+  throw new Error('Discord doğrulaması uygulama kapatıldığı için iptal edildi.');
 }
 
 // Command registry mapping
@@ -276,7 +358,7 @@ async function launchBot() {
   console.log(`[Startup] Node ${process.version}, discord.js ${discordJsVersion}`);
 
   try {
-    await verifyDiscordCredentials();
+    await verifyDiscordCredentialsWithRetry();
   } catch (error) {
     console.error('❌ Discord production kimlik/ağ doğrulaması başarısız:', error.message);
     await shutdown(1, 'Discord credential verification failed');

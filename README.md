@@ -43,7 +43,7 @@ Bu bot, Albion Online ve benzeri MMO'lar için gelişmiş bir şablon tabanlı e
 - **Build Command:** `npm ci`
 - **Start Command:** `npm start`
 - **Health Check Path:** `/health`
-- UptimeRobot URL'si: `https://<servis-adı>.onrender.com/health`
+- UptimeRobot URL'si: `https://<servis-adı>.onrender.com/ready`
 - Render'daki `DISCORD_TOKEN` ve `CLIENT_ID` aynı production Discord botuna ait olmalıdır.
 - Tokenı loglara, issue'lara veya mesajlara yapıştırmayın. Gerekirse Discord Developer Portal'dan resetleyip doğrudan Render Environment alanına kaydedin.
 
@@ -56,7 +56,7 @@ Discord bağlantısı başlatılıyor...
 Discord bağlantısı hazır! Giriş yapan hesap: <production bot etiketi>
 ```
 
-`/health`, Discord bağlantısı hazırsa `200`; bot bağlı değilse `503` döndürür. Böylece Render ve UptimeRobot yalnızca HTTP sürecini değil gerçek bot bağlantısını izler.
+`/health`, süreç Discord rate limit'inin kalkmasını beklerken de `200` döndürür; böylece Render iyileşebilecek süreci restart döngüsüne sokmaz. `/ready` ise yalnızca Discord gerçekten bağlıysa `200`, değilse `503` döndürür ve UptimeRobot tarafından botun gerçek durumunu izlemek için kullanılır.
 
 ---
 

@@ -11,23 +11,35 @@ async function startServer(getDiscordStatus) {
   return { server, url: `http://127.0.0.1:${port}` };
 }
 
-test('health endpoint reports 503 while Discord is not ready', async (t) => {
-  const { server, url } = await startServer(() => ({ ready: false, state: 'connecting' }));
+test('Render liveness endpoint stays healthy while a recoverable Discord connection is pending', async (t) => {
+  const { server, url } = await startServer(() => ({ ready: false, state: 'rate_limited' }));
   t.after(() => server.close());
 
   const response = await fetch(`${url}/health`);
   const body = await response.json();
 
+  assert.equal(response.status, 200);
+  assert.equal(body.status, 'degraded');
+  assert.equal(body.discord, 'rate_limited');
+});
+
+test('UptimeRobot readiness endpoint reports 503 while Discord is not ready', async (t) => {
+  const { server, url } = await startServer(() => ({ ready: false, state: 'connecting' }));
+  t.after(() => server.close());
+
+  const response = await fetch(`${url}/ready`);
+  const body = await response.json();
+
   assert.equal(response.status, 503);
-  assert.equal(body.status, 'unavailable');
+  assert.equal(body.status, 'degraded');
   assert.equal(body.discord, 'connecting');
 });
 
-test('health endpoint reports 200 only when Discord is ready', async (t) => {
+test('readiness endpoint reports 200 only when Discord is ready', async (t) => {
   const { server, url } = await startServer(() => ({ ready: true, state: 'connected' }));
   t.after(() => server.close());
 
-  const response = await fetch(`${url}/health`);
+  const response = await fetch(`${url}/ready`);
   const body = await response.json();
 
   assert.equal(response.status, 200);
