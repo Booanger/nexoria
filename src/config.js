@@ -2,11 +2,13 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 export const config = {
-  token: process.env.DISCORD_TOKEN,
-  clientId: process.env.CLIENT_ID,
-  supabaseUrl: process.env.SUPABASE_URL,
-  supabaseKey: process.env.SUPABASE_KEY,
-  allowedGuilds: process.env.ALLOWED_GUILDS ? process.env.ALLOWED_GUILDS.split(',').map(id => id.trim()) : []
+  token: process.env.DISCORD_TOKEN?.trim(),
+  clientId: process.env.CLIENT_ID?.trim(),
+  supabaseUrl: process.env.SUPABASE_URL?.trim(),
+  supabaseKey: process.env.SUPABASE_KEY?.trim(),
+  allowedGuilds: process.env.ALLOWED_GUILDS
+    ? process.env.ALLOWED_GUILDS.split(',').map(id => id.trim()).filter(Boolean)
+    : []
 };
 
 if (!config.token) {

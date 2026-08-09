@@ -1,22 +1,107 @@
-import { Client, GatewayIntentBits, REST, Routes, MessageFlags, Events } from 'discord.js';
+import { Client, GatewayIntentBits, REST, Routes, MessageFlags, Events, version as discordJsVersion } from 'discord.js';
 import { config } from './config.js';
 import * as createContent from './commands/createContent.js';
 import { handleInteraction } from './handlers/interactionHandler.js';
-import http from 'http';
+import { createHealthServer } from './healthServer.js';
 
-// 📡 Keep-alive HTTP server for Render deployment
-const PORT = process.env.PORT || 3000;
-http.createServer((req, res) => {
-  res.writeHead(200, { 'Content-Type': 'text/plain' });
-  res.end('Bot is running and awake!');
-}).listen(PORT, () => {
-  console.log(`📡 Keep-alive web server is listening on port ${PORT}`);
-});
+const PORT = Number.parseInt(process.env.PORT || '3000', 10);
+const DISCORD_READY_TIMEOUT_MS = 45_000;
+const DISCORD_RECONNECT_TIMEOUT_MS = 90_000;
+const DISCORD_API_TIMEOUT_MS = 15_000;
 
 // Initialize Discord Client with basic Guild permissions
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages]
 });
+
+let discordState = 'starting';
+let connectionDeadline = null;
+let shuttingDown = false;
+let startupTasksCompleted = false;
+
+const healthServer = createHealthServer({
+  getDiscordStatus: () => ({
+    ready: client.isReady(),
+    state: client.isReady() ? 'connected' : discordState
+  })
+});
+
+healthServer.on('error', (error) => {
+  console.error('❌ HTTP health server hatası:', error);
+  void shutdown(1, 'HTTP health server failed');
+});
+
+healthServer.listen(PORT, () => {
+  console.log(`📡 Health server ${PORT} portunda dinleniyor (/health).`);
+});
+
+function clearConnectionDeadline() {
+  if (connectionDeadline) {
+    clearTimeout(connectionDeadline);
+    connectionDeadline = null;
+  }
+}
+
+function setConnectionDeadline(timeoutMs, reason) {
+  clearConnectionDeadline();
+  connectionDeadline = setTimeout(() => {
+    if (!client.isReady()) {
+      console.error(`❌ Discord ${reason}; ${timeoutMs / 1000} saniye içinde hazır olmadı. Süreç yeniden başlatılıyor.`);
+      void shutdown(1, `Discord ${reason}`);
+    }
+  }, timeoutMs);
+}
+
+async function shutdown(exitCode, reason) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  process.exitCode = exitCode;
+  discordState = 'stopping';
+  clearConnectionDeadline();
+  console.log(`🛑 Kapatılıyor: ${reason}`);
+
+  if (client.token) {
+    try {
+      client.destroy();
+    } catch (error) {
+      console.error('Discord istemcisi kapatılırken hata oluştu:', error);
+    }
+  }
+
+  healthServer.close();
+  setTimeout(() => process.exit(exitCode), 5_000).unref();
+}
+
+async function fetchDiscordApi(path) {
+  const response = await fetch(`https://discord.com/api/v10${path}`, {
+    headers: { Authorization: `Bot ${config.token}` },
+    signal: AbortSignal.timeout(DISCORD_API_TIMEOUT_MS)
+  });
+
+  if (!response.ok) {
+    throw new Error(`Discord API ${path} isteği HTTP ${response.status} döndürdü.`);
+  }
+
+  return response.json();
+}
+
+async function verifyDiscordCredentials() {
+  discordState = 'validating';
+  console.log('🔐 Production Discord tokenı ve gateway erişimi doğrulanıyor...');
+
+  // Sequential requests avoid leaving a second request open when a bad token
+  // immediately returns 401 on the first one.
+  const botUser = await fetchDiscordApi('/users/@me');
+  const gateway = await fetchDiscordApi('/gateway/bot');
+
+  if (config.clientId && botUser.id !== config.clientId) {
+    throw new Error('DISCORD_TOKEN başka bir bota ait: Render CLIENT_ID ile token kimliği eşleşmiyor.');
+  }
+
+  const remaining = gateway.session_start_limit?.remaining;
+  const sessionInfo = Number.isInteger(remaining) ? `, kalan gateway oturumu: ${remaining}` : '';
+  console.log(`✅ Discord tokenı doğrulandı: ${botUser.username}${sessionInfo}`);
+}
 
 // Command registry mapping
 const commands = new Map();
@@ -70,11 +155,21 @@ async function checkGuildsAccess() {
   }
 }
 
-// Client ready event
-client.once(Events.ClientReady, async () => {
-  console.log(`🤖 Bot hazır! Giriş yapan hesap: ${client.user.tag}`);
-  await checkGuildsAccess();
-  await registerCommands();
+// Client ready event (also fires after a full gateway reconnection)
+client.on(Events.ClientReady, async (readyClient) => {
+  discordState = 'connected';
+  clearConnectionDeadline();
+  console.log(`🤖 Discord bağlantısı hazır! Giriş yapan hesap: ${readyClient.user.tag}`);
+
+  if (startupTasksCompleted) return;
+  startupTasksCompleted = true;
+
+  try {
+    await checkGuildsAccess();
+    await registerCommands();
+  } catch (error) {
+    console.error('❌ Discord başlangıç işlemleri başarısız oldu:', error);
+  }
 });
 
 // Check access when invited to a new server
@@ -133,20 +228,68 @@ client.on('shardError', (error) => {
   console.error('❌ Discord WebSocket (shard) hatası:', error);
 });
 
-client.on('shardDisconnect', (event) => {
-  console.warn(`⚠️ Discord bağlantısı koptu (Kod: ${event?.code}). Yeniden bağlanmaya çalışılıyor...`);
+client.on('shardDisconnect', (event, shardId) => {
+  if (shuttingDown) return;
+  discordState = 'disconnected';
+  console.warn(`⚠️ Discord bağlantısı koptu (Shard: ${shardId}, Kod: ${event?.code}). Yeniden bağlanmaya çalışılıyor...`);
+  setConnectionDeadline(DISCORD_RECONNECT_TIMEOUT_MS, 'yeniden bağlantısı zaman aşımına uğradı');
 });
 
-// Global unhandled promise rejection listener
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+client.on('shardReconnecting', (shardId) => {
+  if (shuttingDown) return;
+  discordState = 'reconnecting';
+  console.warn(`🔄 Discord shard ${shardId} yeniden bağlanıyor...`);
 });
 
-// Launch Bot
-if (config.token) {
-  client.login(config.token).catch((err) => {
-    console.error('❌ Discord login başarısız oldu! Token veya ağ hatası:', err.message);
-  });
-} else {
-  console.error('❌ DISCORD_TOKEN bulunamadığı için bot başlatılamadı!');
+client.on('shardResume', (shardId, replayedEvents) => {
+  if (shuttingDown) return;
+  discordState = 'connected';
+  clearConnectionDeadline();
+  console.log(`✅ Discord shard ${shardId} bağlantısı devam ettirildi (${replayedEvents} olay tekrarlandı).`);
+});
+
+if (process.env.DISCORD_DEBUG === 'true') {
+  client.on('debug', (message) => console.log(`[Discord Debug] ${message}`));
 }
+
+process.on('unhandledRejection', (reason) => {
+  console.error('❌ İşlenmeyen Promise hatası:', reason);
+  void shutdown(1, 'Unhandled promise rejection');
+});
+
+process.on('uncaughtException', (error) => {
+  console.error('❌ Yakalanmayan uygulama hatası:', error);
+  void shutdown(1, 'Uncaught exception');
+});
+
+process.on('SIGTERM', () => void shutdown(0, 'SIGTERM'));
+process.on('SIGINT', () => void shutdown(0, 'SIGINT'));
+
+async function launchBot() {
+  if (!config.token) {
+    console.error('❌ DISCORD_TOKEN bulunamadığı için bot başlatılamadı!');
+    await shutdown(1, 'DISCORD_TOKEN is missing');
+    return;
+  }
+
+  discordState = 'connecting';
+  console.log(`[Startup] Node ${process.version}, discord.js ${discordJsVersion}`);
+
+  try {
+    await verifyDiscordCredentials();
+  } catch (error) {
+    console.error('❌ Discord production kimlik/ağ doğrulaması başarısız:', error.message);
+    await shutdown(1, 'Discord credential verification failed');
+    return;
+  }
+
+  discordState = 'connecting';
+  console.log('🔌 Discord bağlantısı başlatılıyor...');
+  setConnectionDeadline(DISCORD_READY_TIMEOUT_MS, 'ilk bağlantısı zaman aşımına uğradı');
+  client.login(config.token).catch((error) => {
+    console.error('❌ Discord login başarısız oldu! Token veya ağ hatası:', error.message);
+    void shutdown(1, 'Discord login failed');
+  });
+}
+
+void launchBot();
