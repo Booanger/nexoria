@@ -1,4 +1,4 @@
-import { Client, GatewayIntentBits, REST, Routes, MessageFlags } from 'discord.js';
+import { Client, GatewayIntentBits, REST, Routes, MessageFlags, Events } from 'discord.js';
 import { config } from './config.js';
 import * as createContent from './commands/createContent.js';
 import { handleInteraction } from './handlers/interactionHandler.js';
@@ -71,7 +71,7 @@ async function checkGuildsAccess() {
 }
 
 // Client ready event
-client.once('clientReady', async () => {
+client.once(Events.ClientReady, async () => {
   console.log(`🤖 Bot hazır! Giriş yapan hesap: ${client.user.tag}`);
   await checkGuildsAccess();
   await registerCommands();
