@@ -4,12 +4,41 @@ import { config } from './config.js';
 class SupabaseEventStore {
   constructor() {
     this.supabase = null;
+    this.eventLocks = new Map();
     if (config.supabaseUrl && config.supabaseKey) {
-      this.supabase = createClient(config.supabaseUrl, config.supabaseKey);
+      this.supabase = createClient(config.supabaseUrl, config.supabaseKey, {
+        auth: {
+          autoRefreshToken: false,
+          persistSession: false
+        }
+      });
       console.log('[EventStore] Supabase client initialized.');
-      this.pruneOldEvents();
     } else {
       console.warn('[EventStore] Supabase credentials missing. Database operations will be disabled.');
+    }
+  }
+
+  /**
+   * Serializes read-modify-write operations for one event in this process.
+   * Render Free runs a single instance, so this prevents concurrent Discord
+   * interactions from overwriting each other.
+   *
+   * @template T
+   * @param {string} eventId
+   * @param {() => Promise<T>} operation
+   * @returns {Promise<T>}
+   */
+  async withEventLock(eventId, operation) {
+    const previous = this.eventLocks.get(eventId) || Promise.resolve();
+    const current = previous.catch(() => undefined).then(operation);
+    this.eventLocks.set(eventId, current);
+
+    try {
+      return await current;
+    } finally {
+      if (this.eventLocks.get(eventId) === current) {
+        this.eventLocks.delete(eventId);
+      }
     }
   }
 
@@ -47,12 +76,10 @@ class SupabaseEventStore {
         .from('events')
         .select('data')
         .eq('id', eventId)
-        .single();
+        .maybeSingle();
 
       if (error) {
-        if (error.code !== 'PGRST116') { // PGRST116 means no rows found (expected for new events before save)
-          console.error('[EventStore] Error fetching event:', error.message);
-        }
+        console.error('[EventStore] Error fetching event:', error.message);
         return null;
       }
       return data ? data.data : null;

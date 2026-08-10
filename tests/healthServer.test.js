@@ -11,44 +11,33 @@ async function startServer(getDiscordStatus) {
   return { server, url: `http://127.0.0.1:${port}` };
 }
 
-test('Render liveness endpoint stays healthy while a recoverable Discord connection is pending', async (t) => {
-  const { server, url } = await startServer(() => ({ ready: false, state: 'rate_limited' }));
+test('Render health check stays alive while Discord is reconnecting', async (t) => {
+  const { server, url } = await startServer(() => ({ connected: false, state: 'retry_wait' }));
   t.after(() => server.close());
 
   const response = await fetch(`${url}/health`);
   const body = await response.json();
 
   assert.equal(response.status, 200);
-  assert.equal(body.status, 'degraded');
-  assert.equal(body.discord, 'rate_limited');
+  assert.equal(body.status, 'ok');
+  assert.equal(body.connected, false);
+  assert.equal(body.discord, 'retry_wait');
 });
 
-test('UptimeRobot readiness endpoint reports 503 while Discord is not ready', async (t) => {
-  const { server, url } = await startServer(() => ({ ready: false, state: 'connecting' }));
+test('health response reports an established Discord connection', async (t) => {
+  const { server, url } = await startServer(() => ({ connected: true, state: 'connected' }));
   t.after(() => server.close());
 
-  const response = await fetch(`${url}/ready`);
-  const body = await response.json();
-
-  assert.equal(response.status, 503);
-  assert.equal(body.status, 'degraded');
-  assert.equal(body.discord, 'connecting');
-});
-
-test('readiness endpoint reports 200 only when Discord is ready', async (t) => {
-  const { server, url } = await startServer(() => ({ ready: true, state: 'connected' }));
-  t.after(() => server.close());
-
-  const response = await fetch(`${url}/ready`);
+  const response = await fetch(url);
   const body = await response.json();
 
   assert.equal(response.status, 200);
-  assert.equal(body.status, 'ok');
+  assert.equal(body.connected, true);
   assert.equal(body.discord, 'connected');
 });
 
 test('health server returns 404 for unknown paths', async (t) => {
-  const { server, url } = await startServer(() => ({ ready: true, state: 'connected' }));
+  const { server, url } = await startServer(() => ({ connected: true, state: 'connected' }));
   t.after(() => server.close());
 
   const response = await fetch(`${url}/unknown`);

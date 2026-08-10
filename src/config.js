@@ -8,7 +8,8 @@ export const config = {
   supabaseKey: process.env.SUPABASE_KEY?.trim(),
   allowedGuilds: process.env.ALLOWED_GUILDS
     ? process.env.ALLOWED_GUILDS.split(',').map(id => id.trim()).filter(Boolean)
-    : []
+    : [],
+  discordDebug: process.env.DISCORD_DEBUG === 'true'
 };
 
 if (!config.token) {

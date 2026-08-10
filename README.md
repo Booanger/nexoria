@@ -38,25 +38,30 @@ Bu bot, Albion Online ve benzeri MMO'lar için gelişmiş bir şablon tabanlı e
    npm start
    ```
 
-## Render Production Ayarları
+## Render'a Deploy
 
+Depo kökündeki `render.yaml`, ücretsiz bir Render Web Service için gerekli ayarları içerir. Dashboard üzerinden elle kurulum yapacaksanız:
+
+- **Service Type:** Web Service
+- **Runtime:** Node
 - **Build Command:** `npm ci`
 - **Start Command:** `npm start`
 - **Health Check Path:** `/health`
-- UptimeRobot URL'si: `https://<servis-adı>.onrender.com/ready`
-- Render'daki `DISCORD_TOKEN` ve `CLIENT_ID` aynı production Discord botuna ait olmalıdır.
-- Tokenı loglara, issue'lara veya mesajlara yapıştırmayın. Gerekirse Discord Developer Portal'dan resetleyip doğrudan Render Environment alanına kaydedin.
+- **Environment:** `DISCORD_TOKEN`, `CLIENT_ID`, `SUPABASE_URL`, `SUPABASE_KEY`
 
-Başarılı bir açılışta log sırası şu şekildedir:
+`DISCORD_TOKEN` ve `CLIENT_ID` aynı production Discord uygulamasına ait olmalıdır. Bot, Discord bağlantısından önce fazladan kimlik REST isteği atmaz. Geçici Discord `429` veya ağ hatalarında süreç kapanmadan artan aralıklarla yeniden bağlanmayı dener.
+
+Başarılı bir başlangıçta şu logları görmelisiniz:
 
 ```text
-Discord tokenı ve gateway erişimi doğrulanıyor...
-Discord tokenı doğrulandı: <production bot adı>
-Discord bağlantısı başlatılıyor...
+[Startup] Node v22.x, discord.js 14.27.0
+Discord Gateway bağlantısı başlatılıyor...
 Discord bağlantısı hazır! Giriş yapan hesap: <production bot etiketi>
 ```
 
-`/health`, süreç Discord rate limit'inin kalkmasını beklerken de `200` döndürür; böylece Render iyileşebilecek süreci restart döngüsüne sokmaz. `/ready` ise yalnızca Discord gerçekten bağlıysa `200`, değilse `503` döndürür ve UptimeRobot tarafından botun gerçek durumunu izlemek için kullanılır.
+`/health` yalnızca Render'ın web servisinde açık port ve süreç sağlığı kontrolü içindir; UptimeRobot entegrasyonu değildir. Discord bağlantı durumu endpoint'in JSON gövdesindeki `connected` alanından görülebilir.
+
+Tokenları README'ye, GitHub'a veya loglara yapıştırmayın. Render Dashboard'daki Environment bölümüne secret olarak ekleyin.
 
 ---
 

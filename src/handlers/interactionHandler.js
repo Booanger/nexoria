@@ -163,51 +163,53 @@ async function handleEventCreateModal(interaction) {
  */
 async function handleRoleSelect(interaction) {
   const eventId = interaction.customId.split(':')[1];
-  const event = await eventStore.getEvent(eventId);
+  return eventStore.withEventLock(eventId, async () => {
+    const event = await eventStore.getEvent(eventId);
 
-  if (!event) {
-    return interaction.reply({ content: '❌ Error: This event could not be found in the database.', flags: MessageFlags.Ephemeral });
-  }
-
-  const selectedSlotId = interaction.values[0];
-  const userId = interaction.user.id;
-  const username = interaction.user.username;
-
-  const selectedSlot = event.slots.find(s => s.id === selectedSlotId);
-  if (!selectedSlot) {
-    return interaction.reply({ content: '❌ Error: Selected role could not be found.', flags: MessageFlags.Ephemeral });
-  }
-
-  // If slot is occupied, return error
-  if (selectedSlot.userId) {
-    if (selectedSlot.userId === userId) {
-      return interaction.reply({ content: '⚠️ You are already occupying this role!', flags: MessageFlags.Ephemeral });
+    if (!event) {
+      return interaction.reply({ content: '❌ Error: This event could not be found in the database.', flags: MessageFlags.Ephemeral });
     }
-    return interaction.reply({
-      content: `❌ This role is already taken by <@${selectedSlot.userId}>! Please select a vacant role.`,
-      flags: MessageFlags.Ephemeral
+
+    const selectedSlotId = interaction.values[0];
+    const userId = interaction.user.id;
+    const username = interaction.user.username;
+
+    const selectedSlot = event.slots.find(s => s.id === selectedSlotId);
+    if (!selectedSlot) {
+      return interaction.reply({ content: '❌ Error: Selected role could not be found.', flags: MessageFlags.Ephemeral });
+    }
+
+    // If slot is occupied, return error
+    if (selectedSlot.userId) {
+      if (selectedSlot.userId === userId) {
+        return interaction.reply({ content: '⚠️ You are already occupying this role!', flags: MessageFlags.Ephemeral });
+      }
+      return interaction.reply({
+        content: `❌ This role is already taken by <@${selectedSlot.userId}>! Please select a vacant role.`,
+        flags: MessageFlags.Ephemeral
+      });
+    }
+
+    // Remove the user from any other slot they might be occupying in this event
+    for (const slot of event.slots) {
+      if (slot.userId === userId) {
+        slot.userId = null;
+        slot.username = null;
+      }
+    }
+
+    selectedSlot.userId = userId;
+    selectedSlot.username = username;
+
+    await eventStore.saveEvent(eventId, event);
+
+    const embed = buildEventEmbed(event);
+    const components = buildEventComponents(event);
+
+    await interaction.update({
+      embeds: [embed],
+      components: components
     });
-  }
-
-  // Remove the user from any other slot they might be occupying in this event
-  for (const slot of event.slots) {
-    if (slot.userId === userId) {
-      slot.userId = null;
-      slot.username = null;
-    }
-  }
-
-  selectedSlot.userId = userId;
-  selectedSlot.username = username;
-
-  await eventStore.saveEvent(eventId, event);
-
-  const embed = buildEventEmbed(event);
-  const components = buildEventComponents(event);
-
-  await interaction.update({
-    embeds: [embed],
-    components: components
   });
 }
 
@@ -216,36 +218,38 @@ async function handleRoleSelect(interaction) {
  */
 async function handleLeaveButton(interaction) {
   const eventId = interaction.customId.split(':')[1];
-  const event = await eventStore.getEvent(eventId);
+  return eventStore.withEventLock(eventId, async () => {
+    const event = await eventStore.getEvent(eventId);
 
-  if (!event) {
-    return interaction.reply({ content: '❌ Error: This event could not be found.', flags: MessageFlags.Ephemeral });
-  }
-
-  const userId = interaction.user.id;
-  let occupiedAny = false;
-
-  // Remove from main slots
-  for (const slot of event.slots) {
-    if (slot.userId === userId) {
-      slot.userId = null;
-      slot.username = null;
-      occupiedAny = true;
+    if (!event) {
+      return interaction.reply({ content: '❌ Error: This event could not be found.', flags: MessageFlags.Ephemeral });
     }
-  }
 
-  if (!occupiedAny) {
-    return interaction.reply({ content: '⚠️ You are not registered for this event.', flags: MessageFlags.Ephemeral });
-  }
+    const userId = interaction.user.id;
+    let occupiedAny = false;
 
-  await eventStore.saveEvent(eventId, event);
+    // Remove from main slots
+    for (const slot of event.slots) {
+      if (slot.userId === userId) {
+        slot.userId = null;
+        slot.username = null;
+        occupiedAny = true;
+      }
+    }
 
-  const embed = buildEventEmbed(event);
-  const components = buildEventComponents(event);
+    if (!occupiedAny) {
+      return interaction.reply({ content: '⚠️ You are not registered for this event.', flags: MessageFlags.Ephemeral });
+    }
 
-  await interaction.update({
-    embeds: [embed],
-    components: components
+    await eventStore.saveEvent(eventId, event);
+
+    const embed = buildEventEmbed(event);
+    const components = buildEventComponents(event);
+
+    await interaction.update({
+      embeds: [embed],
+      components: components
+    });
   });
 }
 

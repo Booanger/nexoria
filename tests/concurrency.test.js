@@ -5,7 +5,10 @@ import { eventStore } from '../src/eventStore.js';
 // Force the eventStore to use an in-memory database mock for unit testing
 console.log('🧪 Mocking eventStore in-memory for concurrency tests...');
 const mockDb = new Map();
-eventStore.getEvent = async (id) => mockDb.get(id) || null;
+eventStore.getEvent = async (id) => {
+  const value = mockDb.get(id);
+  return value ? JSON.parse(JSON.stringify(value)) : null;
+};
 eventStore.saveEvent = async (id, data) => {
   // Deep clone to simulate database serialization
   mockDb.set(id, JSON.parse(JSON.stringify(data)));
@@ -38,38 +41,40 @@ const getMockEventData = () => ({
  * @param {string} slotId 
  */
 async function simulateJoinRole(userId, username, slotId) {
-  // 1. Fetch current state
-  const event = await eventStore.getEvent(mockEventId);
-  if (!event) {
-    return { success: false, reason: 'Event not found' };
-  }
-
-  // 2. Find selected slot
-  const slot = event.slots.find(s => s.id === slotId);
-  if (!slot) {
-    return { success: false, reason: 'Slot not found' };
-  }
-
-  // Check if already taken
-  if (slot.userId !== null) {
-    return { success: false, reason: 'Already occupied', currentOwner: slot.username };
-  }
-
-  // Remove the user from any other slot they might be occupying in this event (single role limit)
-  for (const s of event.slots) {
-    if (s.userId === userId) {
-      s.userId = null;
-      s.username = null;
+  return eventStore.withEventLock(mockEventId, async () => {
+    // 1. Fetch current state
+    const event = await eventStore.getEvent(mockEventId);
+    if (!event) {
+      return { success: false, reason: 'Event not found' };
     }
-  }
 
-  // 3. Occupy slot
-  slot.userId = userId;
-  slot.username = username;
+    // 2. Find selected slot
+    const slot = event.slots.find(s => s.id === slotId);
+    if (!slot) {
+      return { success: false, reason: 'Slot not found' };
+    }
 
-  // 4. Save back to database
-  await eventStore.saveEvent(mockEventId, event);
-  return { success: true };
+    // Check if already taken
+    if (slot.userId !== null) {
+      return { success: false, reason: 'Already occupied', currentOwner: slot.username };
+    }
+
+    // Remove the user from any other slot they might be occupying in this event (single role limit)
+    for (const s of event.slots) {
+      if (s.userId === userId) {
+        s.userId = null;
+        s.username = null;
+      }
+    }
+
+    // 3. Occupy slot
+    slot.userId = userId;
+    slot.username = username;
+
+    // 4. Save back to database
+    await eventStore.saveEvent(mockEventId, event);
+    return { success: true };
+  });
 }
 
 test('Simulated Concurrency Stres Testleri', async (t) => {

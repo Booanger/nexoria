@@ -1,35 +1,31 @@
 import http from 'node:http';
 
 /**
- * Creates the HTTP endpoint used by Render and UptimeRobot.
- * A running Node.js process is not considered healthy until Discord is ready.
+ * Render liveness server. Discord connectivity is reported for diagnostics,
+ * but temporary Discord failures must not trigger a Render restart loop.
  *
- * @param {{ getDiscordStatus: () => { ready: boolean, state: string } }} options
+ * @param {{ getDiscordStatus: () => { connected: boolean, state: string } }} options
  * @returns {http.Server}
  */
 export function createHealthServer({ getDiscordStatus }) {
   return http.createServer((req, res) => {
     const pathname = new URL(req.url || '/', 'http://localhost').pathname;
 
-    if (pathname !== '/' && pathname !== '/health' && pathname !== '/ready') {
+    if (pathname !== '/' && pathname !== '/health') {
       res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify({ status: 'not_found' }));
       return;
     }
 
     const discord = getDiscordStatus();
-    const isLivenessCheck = pathname === '/health';
-    const processCanRecover = discord.state !== 'stopping';
-    const statusCode = isLivenessCheck
-      ? (processCanRecover ? 200 : 503)
-      : (discord.ready ? 200 : 503);
     const body = {
-      status: discord.ready ? 'ok' : (processCanRecover ? 'degraded' : 'unavailable'),
+      status: 'ok',
       discord: discord.state,
+      connected: discord.connected,
       uptimeSeconds: Math.floor(process.uptime())
     };
 
-    res.writeHead(statusCode, {
+    res.writeHead(200, {
       'Cache-Control': 'no-store',
       'Content-Type': 'application/json; charset=utf-8'
     });
