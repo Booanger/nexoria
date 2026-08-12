@@ -22,6 +22,7 @@ test('Render health check stays alive while Discord is reconnecting', async (t) 
   assert.equal(body.status, 'ok');
   assert.equal(body.connected, false);
   assert.equal(body.discord, 'retry_wait');
+  assert.equal(body.pendingWrites, 0);
 });
 
 test('health response reports an established Discord connection', async (t) => {

@@ -22,6 +22,7 @@ export function createHealthServer({ getDiscordStatus }) {
       status: 'ok',
       discord: discord.state,
       connected: discord.connected,
+      pendingWrites: discord.pendingWrites ?? 0,
       uptimeSeconds: Math.floor(process.uptime())
     };
 

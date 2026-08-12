@@ -137,7 +137,17 @@ async function handleEventCreateModal(interaction) {
 
   // 2. Set the correct ID and save to Supabase
   event.id = publicMessage.id;
-  await eventStore.saveEvent(event.id, event);
+  let saveResult;
+  try {
+    saveResult = await eventStore.saveEvent(event.id, event);
+  } catch (error) {
+    try {
+      await publicMessage.delete();
+    } catch (cleanupError) {
+      console.error('[Event Create] Unsaved Discord message could not be removed:', cleanupError.message);
+    }
+    throw error;
+  }
 
   // 3. Build components using the correct event.id and edit the public message to attach them
   const components = buildEventComponents(event);
@@ -154,7 +164,9 @@ async function handleEventCreateModal(interaction) {
 
   // 3. Confirm to the leader privately
   await interaction.editReply({
-    content: '✅ Event successfully created!'
+    content: saveResult.queued
+      ? '✅ Event created and is usable. ⚠️ Database sync is delayed; the bot will keep retrying automatically.'
+      : '✅ Event successfully created!'
   });
 }
 
@@ -162,12 +174,13 @@ async function handleEventCreateModal(interaction) {
  * Handles role selection from dropdown menu.
  */
 async function handleRoleSelect(interaction) {
+  await interaction.deferUpdate();
   const eventId = interaction.customId.split(':')[1];
   return eventStore.withEventLock(eventId, async () => {
     const event = await eventStore.getEvent(eventId);
 
     if (!event) {
-      return interaction.reply({ content: '❌ Error: This event could not be found in the database.', flags: MessageFlags.Ephemeral });
+      return interaction.followUp({ content: '❌ Error: This event could not be found in the database.', flags: MessageFlags.Ephemeral });
     }
 
     const selectedSlotId = interaction.values[0];
@@ -176,15 +189,15 @@ async function handleRoleSelect(interaction) {
 
     const selectedSlot = event.slots.find(s => s.id === selectedSlotId);
     if (!selectedSlot) {
-      return interaction.reply({ content: '❌ Error: Selected role could not be found.', flags: MessageFlags.Ephemeral });
+      return interaction.followUp({ content: '❌ Error: Selected role could not be found.', flags: MessageFlags.Ephemeral });
     }
 
     // If slot is occupied, return error
     if (selectedSlot.userId) {
       if (selectedSlot.userId === userId) {
-        return interaction.reply({ content: '⚠️ You are already occupying this role!', flags: MessageFlags.Ephemeral });
+        return interaction.followUp({ content: '⚠️ You are already occupying this role!', flags: MessageFlags.Ephemeral });
       }
-      return interaction.reply({
+      return interaction.followUp({
         content: `❌ This role is already taken by <@${selectedSlot.userId}>! Please select a vacant role.`,
         flags: MessageFlags.Ephemeral
       });
@@ -201,15 +214,22 @@ async function handleRoleSelect(interaction) {
     selectedSlot.userId = userId;
     selectedSlot.username = username;
 
-    await eventStore.saveEvent(eventId, event);
+    const saveResult = await eventStore.saveEvent(eventId, event);
 
     const embed = buildEventEmbed(event);
     const components = buildEventComponents(event);
 
-    await interaction.update({
+    await interaction.editReply({
       embeds: [embed],
       components: components
     });
+
+    if (saveResult.queued) {
+      await interaction.followUp({
+        content: '⚠️ Your role change is active and waiting for database sync.',
+        flags: MessageFlags.Ephemeral
+      });
+    }
   });
 }
 
@@ -217,12 +237,13 @@ async function handleRoleSelect(interaction) {
  * Handles leaving an event.
  */
 async function handleLeaveButton(interaction) {
+  await interaction.deferUpdate();
   const eventId = interaction.customId.split(':')[1];
   return eventStore.withEventLock(eventId, async () => {
     const event = await eventStore.getEvent(eventId);
 
     if (!event) {
-      return interaction.reply({ content: '❌ Error: This event could not be found.', flags: MessageFlags.Ephemeral });
+      return interaction.followUp({ content: '❌ Error: This event could not be found.', flags: MessageFlags.Ephemeral });
     }
 
     const userId = interaction.user.id;
@@ -238,18 +259,25 @@ async function handleLeaveButton(interaction) {
     }
 
     if (!occupiedAny) {
-      return interaction.reply({ content: '⚠️ You are not registered for this event.', flags: MessageFlags.Ephemeral });
+      return interaction.followUp({ content: '⚠️ You are not registered for this event.', flags: MessageFlags.Ephemeral });
     }
 
-    await eventStore.saveEvent(eventId, event);
+    const saveResult = await eventStore.saveEvent(eventId, event);
 
     const embed = buildEventEmbed(event);
     const components = buildEventComponents(event);
 
-    await interaction.update({
+    await interaction.editReply({
       embeds: [embed],
       components: components
     });
+
+    if (saveResult.queued) {
+      await interaction.followUp({
+        content: '⚠️ Your change is active and waiting for database sync.',
+        flags: MessageFlags.Ephemeral
+      });
+    }
   });
 }
 
@@ -257,15 +285,16 @@ async function handleLeaveButton(interaction) {
  * Handles the leader settings control panel button.
  */
 async function handleSettingsButton(interaction) {
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
   const eventId = interaction.customId.split(':')[1];
   const event = await eventStore.getEvent(eventId);
 
   if (!event) {
-    return interaction.reply({ content: '❌ Error: This event could not be found.', flags: MessageFlags.Ephemeral });
+    return interaction.editReply({ content: '❌ Error: This event could not be found.' });
   }
 
   if (interaction.user.id !== event.leaderId) {
-    return interaction.reply({ content: '❌ Only the **Event Leader** (<@' + event.leaderId + '>) can use the Settings menu!', flags: MessageFlags.Ephemeral });
+    return interaction.editReply({ content: '❌ Only the **Event Leader** (<@' + event.leaderId + '>) can use the Settings menu!' });
   }
 
   const closeBtn = new ButtonBuilder()
@@ -288,10 +317,9 @@ async function handleSettingsButton(interaction) {
 
   const row = new ActionRowBuilder().addComponents(editEventBtn, pingBtn, closeBtn);
 
-  await interaction.reply({
+  await interaction.editReply({
     content: '⚙️ **Event Control Panel**\nUse the buttons below to end the event, edit details, or ping all registered members.',
-    components: [row],
-    flags: MessageFlags.Ephemeral
+    components: [row]
   });
 }
 
@@ -300,10 +328,13 @@ async function handleSettingsButton(interaction) {
  */
 async function handleControlEditEvent(interaction) {
   const eventId = interaction.customId.split(':')[1];
-  const event = await eventStore.getEvent(eventId);
+  const event = eventStore.getCachedEvent(eventId);
 
   if (!event) {
-    return interaction.reply({ content: '❌ Event not found.', flags: MessageFlags.Ephemeral });
+    return interaction.reply({
+      content: '⚠️ Event data expired from memory. Please close this panel, reopen **Settings**, and try again.',
+      flags: MessageFlags.Ephemeral
+    });
   }
 
   const modal = new ModalBuilder()
@@ -349,89 +380,100 @@ async function handleControlEditEvent(interaction) {
  * Handles the submission of the edit event modal.
  */
 async function handleEditModalSubmit(interaction) {
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
   const eventId = interaction.customId.split(':')[1];
-  const event = await eventStore.getEvent(eventId);
+  return eventStore.withEventLock(eventId, async () => {
+    const event = await eventStore.getEvent(eventId);
 
-  if (!event) {
-    return interaction.reply({ content: '❌ Event not found.', flags: MessageFlags.Ephemeral });
-  }
+    if (!event) {
+      return interaction.editReply({ content: '❌ Event not found.' });
+    }
 
-  const title = interaction.fields.getTextInputValue('modal_edit_title');
-  const description = interaction.fields.getTextInputValue('modal_edit_desc') || '';
-  const templateText = interaction.fields.getTextInputValue('modal_edit_template');
+    const title = interaction.fields.getTextInputValue('modal_edit_title');
+    const description = interaction.fields.getTextInputValue('modal_edit_desc') || '';
+    const templateText = interaction.fields.getTextInputValue('modal_edit_template');
 
-  const newSlots = parseTemplate(templateText);
-  if (newSlots.length === 0) {
-    return interaction.reply({ content: '❌ Error: No roles could be parsed from the template. Edit failed.', flags: MessageFlags.Ephemeral });
-  }
+    const newSlots = parseTemplate(templateText);
+    if (newSlots.length === 0) {
+      return interaction.editReply({ content: '❌ Error: No roles could be parsed from the template. Edit failed.' });
+    }
 
-  const oldSlots = event.slots;
+    const oldSlots = event.slots;
 
   // Preserve player assignments by slot matching
-  const occupiedOldSlots = oldSlots.filter(s => s.userId !== null);
-  for (const oldSlot of occupiedOldSlots) {
-    let matchingNewSlot = newSlots.find(s => s.name === oldSlot.name && s.category === oldSlot.category && s.userId === null);
-    if (!matchingNewSlot) {
-      matchingNewSlot = newSlots.find(s => s.name === oldSlot.name && s.userId === null);
+    const occupiedOldSlots = oldSlots.filter(s => s.userId !== null);
+    for (const oldSlot of occupiedOldSlots) {
+      let matchingNewSlot = newSlots.find(s => s.name === oldSlot.name && s.category === oldSlot.category && s.userId === null);
+      if (!matchingNewSlot) {
+        matchingNewSlot = newSlots.find(s => s.name === oldSlot.name && s.userId === null);
+      }
+
+      if (matchingNewSlot) {
+        matchingNewSlot.userId = oldSlot.userId;
+        matchingNewSlot.username = oldSlot.username;
+      }
     }
 
-    if (matchingNewSlot) {
-      matchingNewSlot.userId = oldSlot.userId;
-      matchingNewSlot.username = oldSlot.username;
-    }
-  }
+    event.title = title;
+    event.description = description;
+    event.slots = newSlots;
 
-  event.title = title;
-  event.description = description;
-  event.slots = newSlots;
+    const saveResult = await eventStore.saveEvent(eventId, event);
 
-  await eventStore.saveEvent(eventId, event);
+    const channel = await interaction.client.channels.fetch(event.channelId);
+    const message = await channel.messages.fetch(eventId);
 
-  const channel = await interaction.client.channels.fetch(event.channelId);
-  const message = await channel.messages.fetch(eventId);
+    const embed = buildEventEmbed(event);
+    const components = buildEventComponents(event);
 
-  const embed = buildEventEmbed(event);
-  const components = buildEventComponents(event);
+    await message.edit({
+      embeds: [embed],
+      components: components
+    });
 
-  await message.edit({
-    embeds: [embed],
-    components: components
+    await interaction.editReply({
+      content: saveResult.queued
+        ? '✅ Event updated. ⚠️ Database sync is delayed; the bot will keep retrying automatically.'
+        : '✅ Event successfully updated. Roster preserved!'
+    });
   });
-
-  await interaction.reply({ content: '✅ Event successfully updated. Roster preserved!', flags: MessageFlags.Ephemeral });
 }
 
 /**
  * Handles the leader finishing/closing the event.
  */
 async function handleControlClose(interaction) {
+  await interaction.deferUpdate();
   const eventId = interaction.customId.split(':')[1];
-  const event = await eventStore.getEvent(eventId);
+  return eventStore.withEventLock(eventId, async () => {
+    const event = await eventStore.getEvent(eventId);
 
-  if (!event) {
-    return interaction.reply({ content: '❌ Event already closed or not found.', flags: MessageFlags.Ephemeral });
-  }
+    if (!event) {
+      return interaction.editReply({ content: '❌ Event already closed or not found.', components: [] });
+    }
 
-  await eventStore.deleteEvent(eventId);
+    const deleteResult = await eventStore.deleteEvent(eventId);
 
-  const channel = await interaction.client.channels.fetch(event.channelId);
-  const message = await channel.messages.fetch(eventId);
+    const channel = await interaction.client.channels.fetch(event.channelId);
+    const message = await channel.messages.fetch(eventId);
 
-  const embed = EmbedBuilder.from(message.embeds[0])
-    .setTitle(`🏁 EVENT ENDED: ${event.title.toUpperCase()}`)
-    .setColor('#7F8C8D') // Neutral gray color
-    .setDescription(`⚙️ **This event has ended.**\n\n*Description: ${event.description || 'None'}*`);
+    const embed = EmbedBuilder.from(message.embeds[0])
+      .setTitle(`🏁 EVENT ENDED: ${event.title.toUpperCase()}`)
+      .setColor('#7F8C8D') // Neutral gray color
+      .setDescription(`⚙️ **This event has ended.**\n\n*Description: ${event.description || 'None'}*`);
 
-  await message.edit({
-    content: null, // Remove @everyone ping from content when ended
-    embeds: [embed],
-    components: []
-  });
+    await message.edit({
+      content: null, // Remove @everyone ping from content when ended
+      embeds: [embed],
+      components: []
+    });
 
-  await interaction.update({
-    content: '🏁 Event has ended and registration is closed.',
-    components: [],
-    flags: MessageFlags.Ephemeral
+    await interaction.editReply({
+      content: deleteResult.queued
+        ? '🏁 Event has ended. Database cleanup is queued and will retry automatically.'
+        : '🏁 Event has ended and registration is closed.',
+      components: []
+    });
   });
 }
 
@@ -439,11 +481,12 @@ async function handleControlClose(interaction) {
  * Handles the leader pinging all participants.
  */
 async function handleControlPing(interaction) {
+  await interaction.deferUpdate();
   const eventId = interaction.customId.split(':')[1];
   const event = await eventStore.getEvent(eventId);
 
   if (!event) {
-    return interaction.reply({ content: '❌ Event not found.', flags: MessageFlags.Ephemeral });
+    return interaction.editReply({ content: '❌ Event not found.', components: [] });
   }
 
   const userIds = new Set();
@@ -454,7 +497,7 @@ async function handleControlPing(interaction) {
   }
 
   if (userIds.size === 0) {
-    return interaction.reply({ content: '⚠️ No players are registered in this event. Ping aborted.', flags: MessageFlags.Ephemeral });
+    return interaction.editReply({ content: '⚠️ No players are registered in this event. Ping aborted.' });
   }
 
   const mentions = Array.from(userIds).map(id => `<@${id}>`).join(' ');
@@ -464,9 +507,8 @@ async function handleControlPing(interaction) {
     content: `🔔 Gathering for **${event.title.toUpperCase()}**!\nPlayers: ${mentions}\nLeader: <@${event.leaderId}>`
   });
 
-  await interaction.update({
+  await interaction.editReply({
     content: '🔔 Group pinged successfully!',
-    components: [],
-    flags: MessageFlags.Ephemeral
+    components: []
   });
 }

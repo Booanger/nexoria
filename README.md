@@ -61,6 +61,10 @@ Discord bağlantısı hazır! Giriş yapan hesap: <production bot etiketi>
 
 `/health` yalnızca Render'ın web servisinde açık port ve süreç sağlığı kontrolü içindir; UptimeRobot entegrasyonu değildir. Discord bağlantı durumu endpoint'in JSON gövdesindeki `connected` alanından görülebilir.
 
+Backend erişiminde etkinlikler 60 saniyelik sınırlı bir LRU cache'te tutulur. Cache en fazla 500 etkinlik saklar, aynı etkinliğin eşzamanlı okumalarını tek Supabase isteğinde birleştirir ve geçici Supabase kesintisinde en fazla 30 dakikalık son başarılı veriyi kullanabilir. Supabase istekleri 5 saniyede zaman aşımına uğrar, geçici hata bir kez yeniden denenir ve sürekli kesintide 5 saniyelik kısa devre uygulanarak interaction kuyruğunun birikmesi önlenir.
+
+Geçici bağlantı kesintilerinde yazma ve silme işlemleri cache-backed outbox kuyruğunda etkinlik başına birleştirilir. Discord mesajı ve kontroller çalışmaya devam eder; bot artan aralıklarla arka planda tekrar dener ve bağlantı geldiğinde en güncel durumu Supabase'e aktarır. `/health` çıktısındaki `pendingWrites` alanı bekleyen işlem sayısını gösterir. Render süreci kapanırken kuyruk son kez gönderilmeye çalışılır.
+
 Tokenları README'ye, GitHub'a veya loglara yapıştırmayın. Render Dashboard'daki Environment bölümüne secret olarak ekleyin.
 
 ---

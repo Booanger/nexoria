@@ -10,7 +10,7 @@ import {
 } from 'discord.js';
 import { config } from './config.js';
 import * as createContent from './commands/createContent.js';
-import { eventStore } from './eventStore.js';
+import { eventStore, EventStoreError } from './eventStore.js';
 import { handleInteraction } from './handlers/interactionHandler.js';
 import { createHealthServer } from './healthServer.js';
 
@@ -31,7 +31,8 @@ let startupTasksCompleted = false;
 const healthServer = createHealthServer({
   getDiscordStatus: () => ({
     connected: client.isReady(),
-    state: client.isReady() ? 'connected' : discordState
+    state: client.isReady() ? 'connected' : discordState,
+    pendingWrites: eventStore.getPendingWriteCount()
   })
 });
 
@@ -70,6 +71,8 @@ async function shutdown(exitCode, reason) {
   shuttingDown = true;
   discordState = 'stopping';
   console.log(`🛑 Kapatılıyor: ${reason}`);
+  const forceExitTimer = setTimeout(() => process.exit(exitCode), 5_000);
+  forceExitTimer.unref();
 
   try {
     await client.destroy();
@@ -77,8 +80,20 @@ async function shutdown(exitCode, reason) {
     console.error('Discord istemcisi kapatılırken hata oluştu:', formatError(error));
   }
 
-  healthServer.close(() => process.exit(exitCode));
-  setTimeout(() => process.exit(exitCode), 5_000).unref();
+  if (eventStore.getPendingWriteCount() > 0) {
+    console.log(`⏳ ${eventStore.getPendingWriteCount()} bekleyen veritabanı işlemi son kez gönderiliyor...`);
+    const flushResult = await Promise.race([
+      eventStore.flushPendingWrites({ force: true }),
+      wait(4_000).then(() => null)
+    ]);
+    if (flushResult?.remaining > 0) {
+      console.warn(`⚠️ ${flushResult.remaining} işlem kapanmadan önce senkronize edilemedi.`);
+    }
+  }
+
+  healthServer.close();
+  clearTimeout(forceExitTimer);
+  process.exit(exitCode);
 }
 
 async function loginWithRetry() {
@@ -224,11 +239,21 @@ client.on('interactionCreate', async (interaction) => {
     // 2. Handle Buttons, Select Menus, Modals
     await handleInteraction(interaction);
   } catch (error) {
+    if (error?.code === 10062) {
+      console.warn('⚠️ Discord etkileşimi yanıtlanamadan zaman aşımına uğradı (10062).');
+      return;
+    }
+
     console.error('💥 Bir etkileşim işlenirken beklenmedik hata oluştu:', error);
     
     try {
-      const errorMsg = '⚠️ Bu işlem sırasında beklenmedik bir hata oluştu.';
-      if (interaction.deferred || interaction.replied) {
+      const errorMsg = error instanceof EventStoreError
+        ? '⚠️ Veritabanına şu anda ulaşılamıyor. İşlem kaydedilmedi; lütfen birkaç saniye sonra tekrar deneyin.'
+        : '⚠️ Bu işlem sırasında beklenmedik bir hata oluştu.';
+
+      if (interaction.deferred && interaction.ephemeral === true) {
+        await interaction.editReply({ content: errorMsg, components: [] });
+      } else if (interaction.deferred || interaction.replied) {
         await interaction.followUp({ content: errorMsg, flags: MessageFlags.Ephemeral });
       } else {
         await interaction.reply({ content: errorMsg, flags: MessageFlags.Ephemeral });
