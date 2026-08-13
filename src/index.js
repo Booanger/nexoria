@@ -12,12 +12,10 @@ import { config } from './config.js';
 import * as createContent from './commands/createContent.js';
 import { eventStore, EventStoreError } from './eventStore.js';
 import { handleInteraction } from './handlers/interactionHandler.js';
-import { createHealthServer } from './healthServer.js';
 
-const parsedPort = Number.parseInt(process.env.PORT || '10000', 10);
-const PORT = Number.isInteger(parsedPort) && parsedPort > 0 ? parsedPort : 10000;
 const LOGIN_RETRY_BASE_MS = 30_000;
 const LOGIN_RETRY_MAX_MS = 5 * 60_000;
+const DATABASE_CLEANUP_INTERVAL_MS = 6 * 60 * 60_000;
 
 // Initialize Discord Client with basic Guild permissions
 const client = new Client({
@@ -27,23 +25,7 @@ const client = new Client({
 let discordState = 'starting';
 let shuttingDown = false;
 let startupTasksCompleted = false;
-
-const healthServer = createHealthServer({
-  getDiscordStatus: () => ({
-    connected: client.isReady(),
-    state: client.isReady() ? 'connected' : discordState,
-    pendingWrites: eventStore.getPendingWriteCount()
-  })
-});
-
-healthServer.on('error', (error) => {
-  console.error('❌ Render health server hatası:', error);
-  void shutdown(1, 'Health server failed');
-});
-
-healthServer.listen(PORT, '0.0.0.0', () => {
-  console.log(`📡 Render health server 0.0.0.0:${PORT} üzerinde hazır (/health).`);
-});
+let databaseCleanupTimer = null;
 
 function wait(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -80,18 +62,17 @@ async function shutdown(exitCode, reason) {
     console.error('Discord istemcisi kapatılırken hata oluştu:', formatError(error));
   }
 
-  if (eventStore.getPendingWriteCount() > 0) {
-    console.log(`⏳ ${eventStore.getPendingWriteCount()} bekleyen veritabanı işlemi son kez gönderiliyor...`);
-    const flushResult = await Promise.race([
-      eventStore.flushPendingWrites({ force: true }),
-      wait(4_000).then(() => null)
-    ]);
-    if (flushResult?.remaining > 0) {
-      console.warn(`⚠️ ${flushResult.remaining} işlem kapanmadan önce senkronize edilemedi.`);
-    }
+  if (databaseCleanupTimer) {
+    clearInterval(databaseCleanupTimer);
+    databaseCleanupTimer = null;
   }
 
-  healthServer.close();
+  try {
+    eventStore.close();
+  } catch (error) {
+    console.error('SQLite kapatılırken hata oluştu:', formatError(error));
+  }
+
   clearTimeout(forceExitTimer);
   process.exit(exitCode);
 }
@@ -109,7 +90,7 @@ async function loginWithRetry() {
       return;
     } catch (error) {
       if (isInvalidTokenError(error)) {
-        throw new Error('DISCORD_TOKEN geçersiz veya iptal edilmiş. Render tokenını production botundan yeniden alın.');
+        throw new Error('DISCORD_TOKEN geçersiz veya iptal edilmiş. Production bot tokenını Discord Developer Portal üzerinden yenileyin.');
       }
 
       attempt += 1;
@@ -202,6 +183,12 @@ client.once(Events.ClientReady, async (readyClient) => {
     await checkGuildsAccess();
     await registerCommands();
     await eventStore.pruneOldEvents();
+    databaseCleanupTimer = setInterval(() => {
+      void eventStore.pruneOldEvents().catch(error => {
+        console.error('❌ Periyodik SQLite temizliği başarısız:', formatError(error));
+      });
+    }, DATABASE_CLEANUP_INTERVAL_MS);
+    databaseCleanupTimer.unref();
   } catch (error) {
     console.error('❌ Discord başlangıç işlemleri tamamlanamadı:', formatError(error));
   }
@@ -248,7 +235,7 @@ client.on('interactionCreate', async (interaction) => {
     
     try {
       const errorMsg = error instanceof EventStoreError
-        ? '⚠️ Veritabanına şu anda ulaşılamıyor. İşlem kaydedilmedi; lütfen birkaç saniye sonra tekrar deneyin.'
+        ? '⚠️ Yerel veritabanı işlemi tamamlanamadı. Veri güvenliği için işlem uygulanmadı; lütfen tekrar deneyin.'
         : '⚠️ Bu işlem sırasında beklenmedik bir hata oluştu.';
 
       if (interaction.deferred && interaction.ephemeral === true) {
@@ -308,9 +295,7 @@ process.on('SIGINT', () => void shutdown(0, 'SIGINT'));
 async function launchBot() {
   const missingVariables = [
     ['DISCORD_TOKEN', config.token],
-    ['CLIENT_ID', config.clientId],
-    ['SUPABASE_URL', config.supabaseUrl],
-    ['SUPABASE_KEY', config.supabaseKey]
+    ['CLIENT_ID', config.clientId]
   ].filter(([, value]) => !value).map(([name]) => name);
 
   if (missingVariables.length > 0) {
@@ -319,7 +304,7 @@ async function launchBot() {
     return;
   }
 
-  console.log(`[Startup] Node ${process.version}, discord.js ${discordJsVersion}`);
+  console.log(`[Startup] Node ${process.version}, discord.js ${discordJsVersion}, SQLite events: ${eventStore.getEventCount()}`);
 
   try {
     await loginWithRetry();

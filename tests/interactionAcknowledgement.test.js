@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { handleInteraction } from '../src/handlers/interactionHandler.js';
 import { eventStore } from '../src/eventStore.js';
 
-test('role selection is acknowledged before waiting for Supabase', async (t) => {
+test('role selection is acknowledged before reading storage', async (t) => {
   const originalGetEvent = eventStore.getEvent;
   const calls = [];
 
@@ -29,7 +29,7 @@ test('role selection is acknowledged before waiting for Supabase', async (t) => 
   assert.deepEqual(calls, ['acknowledge', 'database', 'follow-up']);
 });
 
-test('settings button is acknowledged before waiting for Supabase', async (t) => {
+test('settings button is acknowledged before reading storage', async (t) => {
   const originalGetEvent = eventStore.getEvent;
   const calls = [];
 
@@ -60,7 +60,7 @@ for (const { name, customId, expectedResponse } of [
   { name: 'close button', customId: 'control_close:message-1', expectedResponse: 'edit-reply' },
   { name: 'ping button', customId: 'control_ping:message-1', expectedResponse: 'edit-reply' }
 ]) {
-  test(`${name} is acknowledged before waiting for Supabase`, async (t) => {
+  test(`${name} is acknowledged before reading storage`, async (t) => {
     const originalGetEvent = eventStore.getEvent;
     const calls = [];
 
@@ -88,7 +88,7 @@ for (const { name, customId, expectedResponse } of [
   });
 }
 
-test('edit modal submission is acknowledged before waiting for Supabase', async (t) => {
+test('edit modal submission is acknowledged before reading storage', async (t) => {
   const originalGetEvent = eventStore.getEvent;
   const calls = [];
 

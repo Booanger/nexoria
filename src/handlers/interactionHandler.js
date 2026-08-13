@@ -64,7 +64,7 @@ async function handleEventCreateModal(interaction) {
     return interaction.editReply({ content: '❌ Error: No valid roles or slots could be parsed. Please check your template.' });
   }
 
-  // Get active events by this user from Supabase
+  // Get active events by this user from local SQLite storage
   const activeEventsOfUser = await eventStore.getEventsByLeader(interaction.user.id);
   activeEventsOfUser.sort((a, b) => a.createdAt - b.createdAt); // Sorted oldest first
 
@@ -135,11 +135,10 @@ async function handleEventCreateModal(interaction) {
     });
   }
 
-  // 2. Set the correct ID and save to Supabase
+  // 2. Set the correct ID and save durably to SQLite
   event.id = publicMessage.id;
-  let saveResult;
   try {
-    saveResult = await eventStore.saveEvent(event.id, event);
+    await eventStore.saveEvent(event.id, event);
   } catch (error) {
     try {
       await publicMessage.delete();
@@ -164,9 +163,7 @@ async function handleEventCreateModal(interaction) {
 
   // 3. Confirm to the leader privately
   await interaction.editReply({
-    content: saveResult.queued
-      ? '✅ Event created and is usable. ⚠️ Database sync is delayed; the bot will keep retrying automatically.'
-      : '✅ Event successfully created!'
+    content: '✅ Event successfully created!'
   });
 }
 
@@ -214,7 +211,7 @@ async function handleRoleSelect(interaction) {
     selectedSlot.userId = userId;
     selectedSlot.username = username;
 
-    const saveResult = await eventStore.saveEvent(eventId, event);
+    await eventStore.saveEvent(eventId, event);
 
     const embed = buildEventEmbed(event);
     const components = buildEventComponents(event);
@@ -224,12 +221,6 @@ async function handleRoleSelect(interaction) {
       components: components
     });
 
-    if (saveResult.queued) {
-      await interaction.followUp({
-        content: '⚠️ Your role change is active and waiting for database sync.',
-        flags: MessageFlags.Ephemeral
-      });
-    }
   });
 }
 
@@ -262,7 +253,7 @@ async function handleLeaveButton(interaction) {
       return interaction.followUp({ content: '⚠️ You are not registered for this event.', flags: MessageFlags.Ephemeral });
     }
 
-    const saveResult = await eventStore.saveEvent(eventId, event);
+    await eventStore.saveEvent(eventId, event);
 
     const embed = buildEventEmbed(event);
     const components = buildEventComponents(event);
@@ -272,12 +263,6 @@ async function handleLeaveButton(interaction) {
       components: components
     });
 
-    if (saveResult.queued) {
-      await interaction.followUp({
-        content: '⚠️ Your change is active and waiting for database sync.',
-        flags: MessageFlags.Ephemeral
-      });
-    }
   });
 }
 
@@ -328,11 +313,11 @@ async function handleSettingsButton(interaction) {
  */
 async function handleControlEditEvent(interaction) {
   const eventId = interaction.customId.split(':')[1];
-  const event = eventStore.getCachedEvent(eventId);
+  const event = eventStore.getEventNow(eventId);
 
   if (!event) {
     return interaction.reply({
-      content: '⚠️ Event data expired from memory. Please close this panel, reopen **Settings**, and try again.',
+      content: '⚠️ Event could not be found. Please close this panel, reopen **Settings**, and try again.',
       flags: MessageFlags.Ephemeral
     });
   }
@@ -418,7 +403,7 @@ async function handleEditModalSubmit(interaction) {
     event.description = description;
     event.slots = newSlots;
 
-    const saveResult = await eventStore.saveEvent(eventId, event);
+    await eventStore.saveEvent(eventId, event);
 
     const channel = await interaction.client.channels.fetch(event.channelId);
     const message = await channel.messages.fetch(eventId);
@@ -432,9 +417,7 @@ async function handleEditModalSubmit(interaction) {
     });
 
     await interaction.editReply({
-      content: saveResult.queued
-        ? '✅ Event updated. ⚠️ Database sync is delayed; the bot will keep retrying automatically.'
-        : '✅ Event successfully updated. Roster preserved!'
+      content: '✅ Event successfully updated. Roster preserved!'
     });
   });
 }
@@ -452,7 +435,7 @@ async function handleControlClose(interaction) {
       return interaction.editReply({ content: '❌ Event already closed or not found.', components: [] });
     }
 
-    const deleteResult = await eventStore.deleteEvent(eventId);
+    await eventStore.deleteEvent(eventId);
 
     const channel = await interaction.client.channels.fetch(event.channelId);
     const message = await channel.messages.fetch(eventId);
@@ -469,9 +452,7 @@ async function handleControlClose(interaction) {
     });
 
     await interaction.editReply({
-      content: deleteResult.queued
-        ? '🏁 Event has ended. Database cleanup is queued and will retry automatically.'
-        : '🏁 Event has ended and registration is closed.',
+      content: '🏁 Event has ended and registration is closed.',
       components: []
     });
   });

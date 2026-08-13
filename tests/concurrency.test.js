@@ -1,20 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
-import { eventStore } from '../src/eventStore.js';
+import { DatabaseSync } from 'node:sqlite';
+import { SQLiteEventStore } from '../src/eventStore.js';
 
-// Force the eventStore to use an in-memory database mock for unit testing
-console.log('🧪 Mocking eventStore in-memory for concurrency tests...');
-const mockDb = new Map();
-eventStore.getEvent = async (id) => {
-  const value = mockDb.get(id);
-  return value ? JSON.parse(JSON.stringify(value)) : null;
-};
-eventStore.saveEvent = async (id, data) => {
-  // Deep clone to simulate database serialization
-  mockDb.set(id, JSON.parse(JSON.stringify(data)));
-};
-eventStore.deleteEvent = async (id) => mockDb.delete(id);
-eventStore.getEventsByLeader = async (leaderId) => Array.from(mockDb.values()).filter(e => e.leaderId === leaderId);
+const eventStore = new SQLiteEventStore({
+  database: new DatabaseSync(':memory:'),
+  logger: { log() {}, warn() {}, error() {} }
+});
 
 // Setup mock config for event database tests
 const mockEventId = 'test_concurrency_event_123';
@@ -78,6 +70,7 @@ async function simulateJoinRole(userId, username, slotId) {
 }
 
 test('Simulated Concurrency Stres Testleri', async (t) => {
+  t.after(() => eventStore.close());
 
   await t.test('Senaryo 1: Farklı kullanıcıların AYNI slota aynı anda katılım denemesi', async () => {
     // Reset event to initial empty state

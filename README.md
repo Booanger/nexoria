@@ -1,79 +1,103 @@
-# Albion Online Event Creator Discord Bot
+# Nexoria Discord Event Bot
 
-Bu bot, Albion Online ve benzeri MMO'lar için gelişmiş bir şablon tabanlı etkinlik/içerik düzenleme botudur. Guild liderlerinin/yöneticilerinin tek bir modal formu üzerinden grup kompozisyonlarını ve build gereksinimlerini otomatik olarak ayrıştırıp görsel şölen sunan Discord Embed mesajları oluşturmasını sağlar.
+Albion Online ve benzeri MMO etkinlikleri için şablon tabanlı grup kurma botu. Etkinlikler artık harici bir veritabanına ihtiyaç duymadan, bot sunucusundaki kalıcı SQLite dosyasında tutulur.
 
----
+## Özellikler
 
-## 🚀 Özellikler
+- Basit veya kategorili rol şablonlarından etkinlik oluşturma
+- Rol seçme, rolden ayrılma ve doluluk göstergesi
+- Lider için etkinliği düzenleme, grubu etiketleme ve etkinliği kapatma kontrolleri
+- Kullanıcı başına en fazla 5 aktif etkinlik
+- 72 saatten eski etkinlikleri otomatik temizleme
+- Aynı etkinlikteki eşzamanlı işlemleri sıraya alarak slot çakışmalarını önleme
+- Yerel SQLite, WAL journal ve tam senkronizasyon ile kalıcı ve atomik yazma
 
-1. **Şablon (Template) Sistemi**:
-   - **Basit Format**: Sadece alt alta roller yazılarak boş slotlar oluşturulur.
-   - **Gelişmiş Format**: `#` karakteri ile rol grupları (Tanks, Healers vb.) oluşturulabilir. `>` karakteri ile o role özel build/ekipman bilgisi yazılabilir.
-2. **Görsel Tasarım**:
-   - Albion Online temalı altın/amber renk paleti.
-   - Emojisiz, sade ve göz yormayan minimalist arayüz.
-   - Dinamik progress bar doluluk göstergesi (`▰▰▰▱▱▱ %50`).
-3. **Zengin Etkileşimler**:
-   - **Rol Seç Menüsü**: Boş ve dolu rollerin tümünü listeleyen açılır menü. Bir kişi rol seçtiğinde otomatik o role atanır ve eski rolünden çıkarılır.
-   - **Ayrıl Butonu**: Kullanıcının etkinlikten çıkmasını sağlar.
-   - **Ayarlar Butonu (Lidere Özel)**: Ephemeral (sadece lidere görünen) yönetim menüsü açar. Buradan etkinlik başlığı/açıklaması ve rolleri tek modalda düzenlenebilir, katılımcılara toplu ping atılabilir veya etkinlik sonlandırılabilir.
-4. **Güvenlik ve Otomatik Temizleme (72 Saat Retention & Limitler)**:
-   - **Kullanıcı Başına 5 Aktif Etkinlik**: Bir kullanıcı aynı anda en fazla 5 aktif etkinlik açabilir. 6. etkinliği açmaya çalıştığında, en eski etkinliği veritabanından silinir ve Discord'da otomatik olarak sonlandırılır.
-   - **72 Saatlik Temizlik**: Kapatılması unutulan tüm etkinlikler, oluşturulduktan 72 saat sonra veritabanından otomatik olarak temizlenir.
+## Yerel kurulum
 
----
+Node.js 22.22 veya daha yeni bir sürüm gerekir. Sunucuda Node.js 24 LTS önerilir.
 
-## ⚙️ Kurulum ve Çalıştırma
-
-1. Projeyi indirin/kopyalayın.
-2. Bağımlılıkları yükleyin:
-   ```bash
-   npm install
-   ```
-3. `.env.example` dosyasını kopyalayıp adını `.env` yapın ve içindeki bilgileri doldurun:
-   - `DISCORD_TOKEN`: Discord Developer Portal'dan aldığınız bot tokenı.
-   - `CLIENT_ID`: Discord Developer Portal'dan aldığınız Application/Client ID'si.
-4. Botu başlatın:
-   ```bash
-   npm start
-   ```
-
-## Render'a Deploy
-
-Depo kökündeki `render.yaml`, ücretsiz bir Render Web Service için gerekli ayarları içerir. Dashboard üzerinden elle kurulum yapacaksanız:
-
-- **Service Type:** Web Service
-- **Runtime:** Node
-- **Build Command:** `npm ci`
-- **Start Command:** `npm start`
-- **Health Check Path:** `/health`
-- **Environment:** `DISCORD_TOKEN`, `CLIENT_ID`, `SUPABASE_URL`, `SUPABASE_KEY`
-
-`DISCORD_TOKEN` ve `CLIENT_ID` aynı production Discord uygulamasına ait olmalıdır. Bot, Discord bağlantısından önce fazladan kimlik REST isteği atmaz. Geçici Discord `429` veya ağ hatalarında süreç kapanmadan artan aralıklarla yeniden bağlanmayı dener.
-
-Başarılı bir başlangıçta şu logları görmelisiniz:
-
-```text
-[Startup] Node v22.x, discord.js 14.27.0
-Discord Gateway bağlantısı başlatılıyor...
-Discord bağlantısı hazır! Giriş yapan hesap: <production bot etiketi>
+```bash
+npm install
 ```
 
-`/health` yalnızca Render'ın web servisinde açık port ve süreç sağlığı kontrolü içindir; UptimeRobot entegrasyonu değildir. Discord bağlantı durumu endpoint'in JSON gövdesindeki `connected` alanından görülebilir.
+`.env.example` dosyasını `.env` adıyla kopyalayıp doldurun:
 
-Backend erişiminde etkinlikler 60 saniyelik sınırlı bir LRU cache'te tutulur. Cache en fazla 500 etkinlik saklar, aynı etkinliğin eşzamanlı okumalarını tek Supabase isteğinde birleştirir ve geçici Supabase kesintisinde en fazla 30 dakikalık son başarılı veriyi kullanabilir. Supabase istekleri 5 saniyede zaman aşımına uğrar, geçici hata bir kez yeniden denenir ve sürekli kesintide 5 saniyelik kısa devre uygulanarak interaction kuyruğunun birikmesi önlenir.
+```dotenv
+DISCORD_TOKEN=PRODUCTION_BOT_TOKEN
+CLIENT_ID=PRODUCTION_APPLICATION_ID
+DATABASE_PATH=data/nexoria.sqlite
+DISCORD_DEBUG=false
+ALLOWED_GUILDS=
+```
 
-Geçici bağlantı kesintilerinde yazma ve silme işlemleri cache-backed outbox kuyruğunda etkinlik başına birleştirilir. Discord mesajı ve kontroller çalışmaya devam eder; bot artan aralıklarla arka planda tekrar dener ve bağlantı geldiğinde en güncel durumu Supabase'e aktarır. `/health` çıktısındaki `pendingWrites` alanı bekleyen işlem sayısını gösterir. Render süreci kapanırken kuyruk son kez gönderilmeye çalışılır.
+`DISCORD_TOKEN` ve `CLIENT_ID` aynı Discord uygulamasına ait olmalıdır. `ALLOWED_GUILDS` boş bırakılırsa bot davet edildiği her sunucuda çalışır; sınırlandırmak için sunucu ID'lerini virgülle ayırın.
 
-Tokenları README'ye, GitHub'a veya loglara yapıştırmayın. Render Dashboard'daki Environment bölümüne secret olarak ekleyin.
+Botu başlatın:
 
----
+```bash
+npm start
+```
 
-## 📝 Şablon Örnekleri
+Başarılı açılışta buna benzer satırlar görülür:
 
-Botu test etmek için aşağıdaki şablonları kopyalayıp `/create-content` modalındaki şablon kısmına yapıştırabilirsiniz.
+```text
+[EventStore] SQLite ready (.../data/nexoria.sqlite).
+[Startup] Node v24.x, discord.js 14.27.0, SQLite events: 0
+Discord Gateway bağlantısı başlatılıyor...
+Discord bağlantısı hazır! Giriş yapan hesap: Nexoria
+```
 
-### Örnek 1: Gelişmiş Format (Albion Static / PvE Buildler)
+## Veri güvenliği
+
+SQLite dosyası varsayılan olarak `data/nexoria.sqlite` konumundadır. Uygulama şu güvenlik ayarlarını otomatik uygular:
+
+- `journal_mode=WAL`: ani kapanmalarda yarım yazma riskini azaltır.
+- `synchronous=FULL`: Discord'a başarı cevabı verilmeden önce verinin diske yazılmasını ister.
+- `busy_timeout=5000`: kısa süreli dosya kilitlerinde hemen hata vermek yerine bekler.
+- Hazır SQL ifadeleri ve JSON doğrulaması kullanılır.
+- Normal kapanışta WAL ana veritabanı dosyasına checkpoint edilir.
+
+Önemli noktalar:
+
+- `data/` klasörü Git'e eklenmez. Bu klasör runtime verisidir.
+- Bot çalışırken `nexoria.sqlite-wal` ve `nexoria.sqlite-shm` dosyalarının görünmesi normaldir.
+- Panelden **Fresh Install/Reinstall** yapmadan önce botu durdurup `data/` klasörünü indirin. Fresh Install sunucu dosyalarını silebilir.
+- Eski harici veritabanı kayıtları otomatik aktarılmaz. Taşıma öncesinde açık olan etkinlikleri kapatıp BisectHosting sürümünde yeniden oluşturun.
+
+## BisectHosting kurulumu
+
+### GitHub üzerinden önerilen yöntem
+
+1. Bu değişiklikleri GitHub'daki `main` dalına gönderin.
+2. BisectHosting **Starbase** panelinde sunucunuzu durdurun.
+3. **Startup** sekmesindeki Git ayarlarında:
+   - **Git Repo Address:** GitHub depo adresiniz
+   - **Git Branch:** `main`
+   - **Auto Update:** Açık
+   - Özel depoysa **Git Username** ve yalnızca bu depoya erişen GitHub Personal Access Token girin.
+4. **Main File** alanına `src/index.js` yazın.
+5. Node.js sürümünü seçebiliyorsanız `24` veya en yeni `24.x LTS` sürümünü seçin.
+6. **Additional Packages** alanını boş bırakın. Bağımlılıklar `package.json` üzerinden kurulur.
+7. İlk kurulum için **Fresh Install** çalıştırın.
+8. **Files** sekmesinde depo dosyalarının geldiğini doğrulayın ve kök dizinde `.env` oluşturun. Yalnızca production Discord botunun tokenını kullanın.
+9. Sunucuyu başlatıp Console'da başarılı SQLite ve Discord bağlantı loglarını kontrol edin.
+
+Alternatif olarak projeyi ZIP olarak yükleyebilirsiniz. `node_modules/`, `.git/`, `.env` ve `data/` klasörlerini ZIP'e koymayın; `.env` dosyasını panelde ayrıca oluşturun.
+
+BisectHosting bot sunucusu sürekli çalışan bir process sunduğu için HTTP portu veya REST health endpoint'i gerekmez. Botun çevrimiçi kalmasını Discord Gateway bağlantısı sağlar.
+
+## Güncelleme ve yedekleme
+
+Normal kod güncellemesi:
+
+1. Değişiklikleri GitHub'a gönderin.
+2. BisectHosting panelinden botu yeniden başlatın.
+3. Auto Update açıksa yeni kod çekilir; `data/` ve `.env` Git tarafından yönetilmediği için yerinde kalır.
+
+Veritabanı yedeği almak için botu durdurun, **Files** sekmesinden tüm `data/` klasörünü indirin ve ardından botu yeniden başlatın. BisectHosting'in otomatik günlük yedekleri ek koruma sağlar; yine de büyük bir güncelleme veya Fresh Install öncesinde manuel kopya alın.
+
+## Şablon örneği
+
 ```text
 #Tanks
 Mace > Astral aegis - Cleric cowl - Armor of valor
@@ -83,22 +107,10 @@ Heavy Mace > Hellion hood - Guardian armor
 Hallowfall > Mistcaller - Druid robe - Soldier helmet
 Wild Staff > Mercenary hood - Cleric robe
 
-#Support
-Arcane > Locus - Mercenary hood - Guardian armor
-
 #DPS
 Light Crossbow > Cryptcandle - Royal cowl - Druid robe
 Realmbreaker > Hellion jacket - Royal hood
 Realmbreaker > Hellion jacket - Royal hood
-Spirithunter > Royal jacket - Scholar cowl
-Spirithunter > Royal jacket - Scholar cowl
 ```
 
-### Örnek 2: Basit Format (Kategori ve buildsiz)
-```text
-Tank
-Healer
-DPS
-DPS
-DPS
-```
+Tokenları README'ye, GitHub'a, destek mesajlarına veya loglara yapıştırmayın.

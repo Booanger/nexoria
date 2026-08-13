@@ -4,8 +4,12 @@ node_modules/
 # Environmental variables (keeps your Discord token and client ID private)
 .env
 
-# Local database file (keeps runtime events out of version control)
-database.json
+# Local SQLite data and temporary WAL files (runtime data must never be committed)
+data/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite-journal
 
 # Log files
 *.log

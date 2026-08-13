@@ -4,8 +4,7 @@ dotenv.config();
 export const config = {
   token: process.env.DISCORD_TOKEN?.trim(),
   clientId: process.env.CLIENT_ID?.trim(),
-  supabaseUrl: process.env.SUPABASE_URL?.trim(),
-  supabaseKey: process.env.SUPABASE_KEY?.trim(),
+  databasePath: process.env.DATABASE_PATH?.trim() || 'data/nexoria.sqlite',
   allowedGuilds: process.env.ALLOWED_GUILDS
     ? process.env.ALLOWED_GUILDS.split(',').map(id => id.trim()).filter(Boolean)
     : [],

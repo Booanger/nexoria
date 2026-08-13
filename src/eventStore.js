@@ -1,121 +1,135 @@
-import { createClient } from '@supabase/supabase-js';
+import { mkdirSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { config } from './config.js';
-import { EventCache } from './eventCache.js';
 
-const SUPABASE_REQUEST_TIMEOUT_MS = 5_000;
-const SUPABASE_RETRY_DELAY_MS = 300;
-const FAILED_REFRESH_COOLDOWN_MS = 5_000;
-const BACKEND_CIRCUIT_BREAK_MS = 5_000;
-const OUTBOX_RETRY_BASE_MS = 5_000;
-const OUTBOX_RETRY_MAX_MS = 5 * 60_000;
-const OUTBOX_MAX_ENTRIES = 1_000;
+const EVENT_RETENTION_MS = 72 * 60 * 60 * 1_000;
+const SQLITE_BUSY_TIMEOUT_MS = 5_000;
 
-function fetchWithTimeout(input, init = {}) {
-  const timeoutSignal = AbortSignal.timeout(SUPABASE_REQUEST_TIMEOUT_MS);
-  const signal = init.signal
-    ? AbortSignal.any([init.signal, timeoutSignal])
-    : timeoutSignal;
-  return fetch(input, { ...init, signal });
-}
-
-function wait(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-function isRetryableDatabaseError(error) {
-  const status = Number(error?.status || error?.statusCode);
-  if (status === 408 || status === 429 || status >= 500) return true;
-  if (status >= 400 && status < 500) return false;
-
-  const code = String(error?.code || '');
-  if (code.startsWith('PGRST')) {
-    return ['PGRST000', 'PGRST001', 'PGRST002', 'PGRST003'].includes(code);
-  }
-  if (/^[0-9A-Z]{5}$/.test(code)) {
-    return ['08', '40', '53', '57', '58'].includes(code.slice(0, 2));
-  }
-
-  return true;
+function clone(value) {
+  return value == null ? value : structuredClone(value);
 }
 
 export class EventStoreError extends Error {
   constructor(operation, cause) {
-    super(`Supabase ${operation} operation failed: ${cause?.message || String(cause)}`);
+    super(`SQLite ${operation} operation failed: ${cause?.message || String(cause)}`);
     this.name = 'EventStoreError';
     this.operation = operation;
     this.cause = cause;
   }
 }
 
-export class SupabaseEventStore {
-  constructor({ client, cache, logger = console } = {}) {
+/**
+ * Durable local event storage for a single Discord bot process.
+ *
+ * SQLite calls are synchronous by design. They are short local SSD operations,
+ * so each public method keeps the existing async interface while avoiding a
+ * remote network dependency and its associated timeouts/rate limits.
+ */
+export class SQLiteEventStore {
+  constructor({ database, databasePath = config.databasePath, logger = console } = {}) {
     this.logger = logger;
     this.eventLocks = new Map();
-    this.inflightReads = new Map();
-    this.eventVersions = new Map();
-    this.backendUnavailableUntil = 0;
-    this.pendingWrites = new Map();
-    this.pendingSequence = 0;
-    this.outboxTimer = null;
-    this.outboxFlushPromise = null;
-    this.cache = cache || new EventCache();
+    this.closed = false;
 
-    if (client !== undefined) {
-      this.supabase = client;
-    } else if (config.supabaseUrl && config.supabaseKey) {
-      this.supabase = createClient(config.supabaseUrl, config.supabaseKey, {
-        auth: {
-          autoRefreshToken: false,
-          persistSession: false
-        },
-        global: {
-          fetch: fetchWithTimeout
-        }
-      });
-    } else {
-      this.supabase = null;
-    }
+    try {
+      if (database) {
+        this.database = database;
+        this.databasePath = ':provided:';
+      } else {
+        this.databasePath = resolve(databasePath || 'data/nexoria.sqlite');
+        mkdirSync(dirname(this.databasePath), { recursive: true });
+        this.database = new DatabaseSync(this.databasePath, {
+          timeout: SQLITE_BUSY_TIMEOUT_MS,
+          enableForeignKeyConstraints: true,
+          allowExtension: false
+        });
+      }
 
-    if (this.supabase) {
-      this.logger.log('[EventStore] Supabase client initialized.');
-    } else {
-      this.logger.warn('[EventStore] Supabase credentials missing. Database operations will be disabled.');
+      this.#initialize();
+      this.logger.log(`[EventStore] SQLite ready (${this.databasePath}).`);
+    } catch (error) {
+      try {
+        this.database?.close();
+      } catch {
+        // Preserve the original initialization error.
+      }
+      throw new EventStoreError('initialization', error);
     }
   }
 
-  getCachedEvent(eventId) {
-    const pending = this.pendingWrites.get(eventId);
-    if (pending) {
-      return pending.type === 'delete' ? null : structuredClone(pending.data);
+  #initialize() {
+    this.database.exec(`
+      PRAGMA journal_mode = WAL;
+      PRAGMA synchronous = FULL;
+      PRAGMA foreign_keys = ON;
+      PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS};
+      PRAGMA wal_autocheckpoint = 1000;
+      PRAGMA journal_size_limit = 67108864;
+
+      CREATE TABLE IF NOT EXISTS events (
+        id TEXT PRIMARY KEY NOT NULL,
+        leader_id TEXT NOT NULL,
+        guild_id TEXT,
+        channel_id TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        data TEXT NOT NULL CHECK (json_valid(data))
+      ) STRICT;
+
+      CREATE INDEX IF NOT EXISTS idx_events_leader_created
+        ON events (leader_id, created_at);
+
+      CREATE INDEX IF NOT EXISTS idx_events_created
+        ON events (created_at);
+    `);
+
+    const integrity = this.database.prepare('PRAGMA quick_check').get();
+    if (integrity?.quick_check !== 'ok') {
+      throw new Error(`SQLite integrity check failed: ${integrity?.quick_check || 'unknown result'}`);
     }
 
-    const fresh = this.cache.getFresh(eventId);
-    return fresh.hit ? fresh.value : this.cache.getStale(eventId);
+    this.statements = {
+      get: this.database.prepare('SELECT data FROM events WHERE id = ?'),
+      listByLeader: this.database.prepare(`
+        SELECT data FROM events
+        WHERE leader_id = ?
+        ORDER BY created_at ASC
+      `),
+      upsert: this.database.prepare(`
+        INSERT INTO events (
+          id, leader_id, guild_id, channel_id, created_at, updated_at, data
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          leader_id = excluded.leader_id,
+          guild_id = excluded.guild_id,
+          channel_id = excluded.channel_id,
+          created_at = excluded.created_at,
+          updated_at = excluded.updated_at,
+          data = excluded.data
+      `),
+      delete: this.database.prepare('DELETE FROM events WHERE id = ?'),
+      prune: this.database.prepare('DELETE FROM events WHERE created_at < ?'),
+      count: this.database.prepare('SELECT COUNT(*) AS count FROM events')
+    };
   }
 
-  getPendingWriteCount() {
-    return this.pendingWrites.size;
-  }
-
-  #getVersion(eventId) {
-    return this.eventVersions.get(eventId) || 0;
-  }
-
-  #bumpVersion(eventId) {
-    const nextVersion = this.#getVersion(eventId) + 1;
-    if (this.inflightReads.has(eventId)) {
-      this.eventVersions.set(eventId, nextVersion);
-    } else {
-      this.eventVersions.delete(eventId);
+  #assertOpen() {
+    if (this.closed) {
+      throw new Error('SQLite database is closed');
     }
-    return nextVersion;
   }
 
-  /**
-   * Serializes read-modify-write operations for one event in this process.
-   * Render Free runs a single instance, preventing concurrent interactions
-   * from overwriting each other.
-   */
+  #parseRow(row, operation) {
+    if (!row) return null;
+    try {
+      return JSON.parse(row.data);
+    } catch (error) {
+      throw new EventStoreError(operation, new Error(`Corrupt event JSON: ${error.message}`));
+    }
+  }
+
+  /** Serializes read-modify-write operations for a single event. */
   async withEventLock(eventId, operation) {
     const previous = this.eventLocks.get(eventId) || Promise.resolve();
     const current = previous.catch(() => undefined).then(operation);
@@ -130,339 +144,106 @@ export class SupabaseEventStore {
     }
   }
 
-  async #runWithRetry(operation, request, { bypassCircuit = false } = {}) {
-    if (!bypassCircuit && Date.now() < this.backendUnavailableUntil) {
-      throw new Error('Supabase is in a short recovery cooldown');
-    }
-
+  /** Synchronous read used before opening a Discord modal, which cannot be deferred. */
+  getEventNow(eventId) {
     try {
-      const result = await request();
-      this.backendUnavailableUntil = 0;
-      return result;
+      this.#assertOpen();
+      return clone(this.#parseRow(this.statements.get.get(eventId), 'read'));
     } catch (error) {
-      if (!isRetryableDatabaseError(error)) throw error;
-      this.logger.warn(`[EventStore] Supabase ${operation} failed; retrying once:`, error?.message || error);
-      await wait(SUPABASE_RETRY_DELAY_MS);
-
-      try {
-        const result = await request();
-        this.backendUnavailableUntil = 0;
-        return result;
-      } catch (retryError) {
-        if (isRetryableDatabaseError(retryError)) {
-          this.backendUnavailableUntil = Date.now() + BACKEND_CIRCUIT_BREAK_MS;
-        }
-        throw retryError;
-      }
-    }
-  }
-
-  #enqueuePendingWrite(eventId, type, data = null) {
-    if (!this.pendingWrites.has(eventId) && this.pendingWrites.size >= OUTBOX_MAX_ENTRIES) {
-      throw new EventStoreError('queue', new Error('Pending write queue is full'));
-    }
-
-    const entry = {
-      eventId,
-      type,
-      data: data ? structuredClone(data) : null,
-      sequence: ++this.pendingSequence,
-      attempts: 0,
-      nextAttemptAt: Math.max(Date.now() + OUTBOX_RETRY_BASE_MS, this.backendUnavailableUntil)
-    };
-    this.pendingWrites.set(eventId, entry);
-    this.#scheduleOutboxFlush();
-    return entry;
-  }
-
-  #scheduleOutboxFlush() {
-    if (this.outboxTimer) {
-      clearTimeout(this.outboxTimer);
-      this.outboxTimer = null;
-    }
-    if (this.pendingWrites.size === 0) return;
-
-    const nextAttemptAt = Math.min(...Array.from(this.pendingWrites.values(), entry => entry.nextAttemptAt));
-    this.outboxTimer = setTimeout(() => {
-      this.outboxTimer = null;
-      void this.flushPendingWrites();
-    }, Math.max(0, nextAttemptAt - Date.now()));
-    this.outboxTimer.unref();
-  }
-
-  async flushPendingWrites({ force = false } = {}) {
-    if (this.outboxFlushPromise) {
-      const currentResult = await this.outboxFlushPromise;
-      if (force && this.pendingWrites.size > 0) {
-        return this.flushPendingWrites({ force: true });
-      }
-      return currentResult;
-    }
-
-    this.outboxFlushPromise = this.#flushPendingWrites(force).finally(() => {
-      this.outboxFlushPromise = null;
-      this.#scheduleOutboxFlush();
-    });
-    return this.outboxFlushPromise;
-  }
-
-  async #flushPendingWrites(force) {
-    let flushed = 0;
-    const now = Date.now();
-    const dueEntries = Array.from(this.pendingWrites.values())
-      .filter(entry => force || entry.nextAttemptAt <= now);
-
-    for (const snapshot of dueEntries) {
-      await this.withEventLock(snapshot.eventId, async () => {
-        const current = this.pendingWrites.get(snapshot.eventId);
-        if (!current || current.sequence !== snapshot.sequence) return;
-
-        try {
-          if (current.type === 'delete') {
-            await this.#persistDelete(current.eventId, { bypassCircuit: force });
-          } else {
-            await this.#persistUpsert(current.eventId, current.data, { bypassCircuit: force });
-          }
-
-          const latest = this.pendingWrites.get(current.eventId);
-          if (!latest || latest.sequence !== current.sequence) return;
-
-          if (current.type === 'delete') {
-            this.cache.delete(current.eventId);
-          } else {
-            this.cache.set(current.eventId, current.data);
-          }
-          this.pendingWrites.delete(current.eventId);
-          this.#bumpVersion(current.eventId);
-          flushed += 1;
-          this.logger.log(`[EventStore] Background ${current.type} synced for ${current.eventId}.`);
-        } catch (error) {
-          const latest = this.pendingWrites.get(current.eventId);
-          if (!latest || latest.sequence !== current.sequence) return;
-
-          latest.attempts += 1;
-          const retryDelay = isRetryableDatabaseError(error)
-            ? Math.min(OUTBOX_RETRY_BASE_MS * (2 ** Math.min(latest.attempts - 1, 6)), OUTBOX_RETRY_MAX_MS)
-            : OUTBOX_RETRY_MAX_MS;
-          latest.nextAttemptAt = Date.now() + retryDelay;
-          this.logger.warn(
-            `[EventStore] Background ${latest.type} still pending for ${latest.eventId}; `
-            + `retrying in ${Math.ceil(retryDelay / 1_000)}s:`,
-            error?.message || error
-          );
-        }
-      });
-    }
-
-    return { flushed, remaining: this.pendingWrites.size };
-  }
-
-  async pruneOldEvents() {
-    if (!this.supabase) return false;
-    const cutoffMs = Date.now() - 72 * 60 * 60 * 1000;
-
-    try {
-      await this.#runWithRetry('prune', async () => {
-        const { error } = await this.supabase
-          .from('events')
-          .delete()
-          .lt('created_at', new Date(cutoffMs).toISOString());
-        if (error) throw error;
-      });
-      this.cache.deleteWhere(event => event.createdAt && event.createdAt < cutoffMs);
-      this.logger.log('[EventStore] Pruned events older than 72 hours from Supabase.');
-      return true;
-    } catch (error) {
-      this.logger.error('[EventStore] Failed to prune old events:', error?.message || error);
-      return false;
-    }
-  }
-
-  async getEvent(eventId) {
-    const pending = this.pendingWrites.get(eventId);
-    if (pending) {
-      return pending.type === 'delete' ? null : structuredClone(pending.data);
-    }
-
-    const fresh = this.cache.getFresh(eventId);
-    if (fresh.hit) return fresh.value;
-
-    const pendingRead = this.inflightReads.get(eventId);
-    if (pendingRead) return structuredClone(await pendingRead);
-
-    const stale = this.cache.getStale(eventId);
-    const readVersion = this.#getVersion(eventId);
-    const read = this.#readEvent(eventId, stale, readVersion);
-    this.inflightReads.set(eventId, read);
-
-    try {
-      const event = await read;
-      return event ? structuredClone(event) : null;
-    } finally {
-      if (this.inflightReads.get(eventId) === read) {
-        this.inflightReads.delete(eventId);
-        this.eventVersions.delete(eventId);
-      }
-    }
-  }
-
-  async #readEvent(eventId, stale, readVersion) {
-    if (!this.supabase) {
-      if (stale) return stale;
-      throw new EventStoreError('read', new Error('Supabase client is not configured'));
-    }
-
-    try {
-      const data = await this.#runWithRetry('read', async () => {
-        const { data, error } = await this.supabase
-          .from('events')
-          .select('data')
-          .eq('id', eventId)
-          .maybeSingle();
-        if (error) throw error;
-        return data;
-      });
-
-      // A write/delete completed while this slower read was in flight.
-      // Never let its older response replace the newer cache state.
-      if (readVersion !== this.#getVersion(eventId)) {
-        return this.getCachedEvent(eventId);
-      }
-
-      if (!data) {
-        this.cache.setMissing(eventId);
-        return null;
-      }
-
-      this.cache.set(eventId, data.data);
-      return data.data;
-    } catch (error) {
-      if (readVersion !== this.#getVersion(eventId)) {
-        return this.getCachedEvent(eventId);
-      }
-      const currentStale = this.cache.getStale(eventId);
-      if (currentStale) {
-        this.cache.postponeRefresh(eventId, FAILED_REFRESH_COOLDOWN_MS);
-        this.logger.warn(`[EventStore] Supabase read failed for ${eventId}; serving stale cache:`, error?.message || error);
-        return currentStale;
-      }
+      if (error instanceof EventStoreError) throw error;
       throw new EventStoreError('read', error);
     }
   }
 
-  async saveEvent(eventId, eventData) {
-    if (!this.supabase) {
-      throw new EventStoreError('write', new Error('Supabase client is not configured'));
-    }
+  async getEvent(eventId) {
+    return this.getEventNow(eventId);
+  }
 
+  async saveEvent(eventId, eventData) {
     try {
-      await this.#persistUpsert(eventId, eventData);
-      this.#bumpVersion(eventId);
-      this.cache.set(eventId, eventData);
-      this.pendingWrites.delete(eventId);
-      this.#scheduleOutboxFlush();
-      return { persisted: true, queued: false };
+      this.#assertOpen();
+      const event = clone({ ...eventData, id: eventId });
+      if (!event.leaderId) throw new Error('leaderId is required');
+
+      const createdAt = Number.isFinite(event.createdAt) ? event.createdAt : Date.now();
+      event.createdAt = createdAt;
+      const serialized = JSON.stringify(event);
+
+      this.statements.upsert.run(
+        eventId,
+        event.leaderId,
+        event.guildId || null,
+        event.channelId || null,
+        createdAt,
+        Date.now(),
+        serialized
+      );
+
+      return { persisted: true };
     } catch (error) {
-      if (isRetryableDatabaseError(error)) {
-        this.#enqueuePendingWrite(eventId, 'upsert', eventData);
-        this.cache.set(eventId, eventData);
-        this.logger.warn(`[EventStore] Write queued for background sync: ${eventId}`);
-        return { persisted: false, queued: true };
-      }
       throw new EventStoreError('write', error);
     }
   }
 
-  async #persistUpsert(eventId, eventData, retryOptions) {
-    await this.#runWithRetry('write', async () => {
-      const { error } = await this.supabase
-        .from('events')
-        .upsert({
-          id: eventId,
-          data: eventData,
-          created_at: eventData.createdAt
-            ? new Date(eventData.createdAt).toISOString()
-            : new Date().toISOString()
-        });
-      if (error) throw error;
-    }, retryOptions);
-  }
-
   async deleteEvent(eventId) {
-    if (!this.supabase) {
-      throw new EventStoreError('delete', new Error('Supabase client is not configured'));
-    }
-
     try {
-      await this.#persistDelete(eventId);
-      this.#bumpVersion(eventId);
-      this.cache.delete(eventId);
-      this.pendingWrites.delete(eventId);
-      this.#scheduleOutboxFlush();
-      return { persisted: true, queued: false };
+      this.#assertOpen();
+      const result = this.statements.delete.run(eventId);
+      return { persisted: true, deleted: Number(result.changes) > 0 };
     } catch (error) {
-      if (isRetryableDatabaseError(error)) {
-        this.#enqueuePendingWrite(eventId, 'delete');
-        this.cache.delete(eventId);
-        this.logger.warn(`[EventStore] Delete queued for background sync: ${eventId}`);
-        return { persisted: false, queued: true };
-      }
       throw new EventStoreError('delete', error);
     }
   }
 
-  async #persistDelete(eventId, retryOptions) {
-    await this.#runWithRetry('delete', async () => {
-      const { error } = await this.supabase
-        .from('events')
-        .delete()
-        .eq('id', eventId);
-      if (error) throw error;
-    }, retryOptions);
-  }
-
   async getEventsByLeader(leaderId) {
-    if (!this.supabase) {
-      throw new EventStoreError('list', new Error('Supabase client is not configured'));
-    }
-
     try {
-      const data = await this.#runWithRetry('list', async () => {
-        const { data, error } = await this.supabase
-          .from('events')
-          .select('data')
-          .eq('data->>leaderId', leaderId);
-        if (error) throw error;
-        return data;
-      });
-
-      return this.#mergeLeaderEvents(data ? data.map(item => item.data) : [], leaderId);
+      this.#assertOpen();
+      return this.statements.listByLeader
+        .all(leaderId)
+        .map(row => clone(this.#parseRow(row, 'list')));
     } catch (error) {
-      if (isRetryableDatabaseError(error)) {
-        this.logger.warn(`[EventStore] Leader event list is using cache while Supabase recovers: ${leaderId}`);
-        return this.#mergeLeaderEvents(this.cache.values(), leaderId);
-      }
+      if (error instanceof EventStoreError) throw error;
       throw new EventStoreError('list', error);
     }
   }
 
-  #mergeLeaderEvents(events, leaderId) {
-    const merged = new Map(
-      events
-        .filter(event => event?.leaderId === leaderId && event?.id)
-        .map(event => [event.id, event])
-    );
-
-    for (const pending of this.pendingWrites.values()) {
-      if (pending.type === 'delete') {
-        merged.delete(pending.eventId);
-      } else if (pending.data?.leaderId === leaderId) {
-        merged.set(pending.eventId, pending.data);
-      }
+  async pruneOldEvents(now = Date.now()) {
+    try {
+      this.#assertOpen();
+      const cutoff = now - EVENT_RETENTION_MS;
+      const result = this.statements.prune.run(cutoff);
+      const deleted = Number(result.changes);
+      this.logger.log(`[EventStore] SQLite cleanup completed (${deleted} old event(s) removed).`);
+      return deleted;
+    } catch (error) {
+      this.logger.error('[EventStore] SQLite cleanup failed:', error?.message || error);
+      throw new EventStoreError('prune', error);
     }
+  }
 
-    return structuredClone(Array.from(merged.values()));
+  getEventCount() {
+    try {
+      this.#assertOpen();
+      return Number(this.statements.count.get().count);
+    } catch (error) {
+      throw new EventStoreError('count', error);
+    }
+  }
+
+  close() {
+    if (this.closed) return;
+
+    try {
+      // Persist the WAL into the main database before the process exits.
+      this.database.exec('PRAGMA wal_checkpoint(TRUNCATE);');
+      this.database.exec('PRAGMA optimize;');
+      this.database.close();
+      this.closed = true;
+      this.logger.log('[EventStore] SQLite closed cleanly.');
+    } catch (error) {
+      throw new EventStoreError('close', error);
+    }
   }
 }
 
-export const eventStore = new SupabaseEventStore();
+export const eventStore = new SQLiteEventStore();
