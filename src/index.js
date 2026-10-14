@@ -192,6 +192,8 @@ client.once(Events.ClientReady, async (readyClient) => {
   } catch (error) {
     console.error('❌ Discord başlangıç işlemleri tamamlanamadı:', formatError(error));
   }
+
+  console.log('successfully finished startup');
 });
 
 // Check access when invited to a new server
